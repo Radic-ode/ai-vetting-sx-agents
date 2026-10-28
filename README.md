@@ -60,7 +60,13 @@ by you); Docker/Podman; macOS `sandbox-exec`. No sandbox → probes are reported
 
 ## Honest limits
 
-- **`probe.sh` is untested** at the time of writing: it passes a syntax check but has not been run.
+- **`probe.sh` is tested against fake components, not yet against a real one.** `scripts/test_probe.sh`
+  runs 11 cases in WSL2 (Ubuntu 26.04, bubblewrap 0.11.1, strace 6.19): a well-behaved write, a stolen
+  SSH key, a leaked token, writes outside the grant, a `.bashrc` persistence line, network with and
+  without the grant, a child program with and without the grant, and a sandbox that fails to start
+  (reported as failed, never as a pass). All pass. The first run found and fixed three bugs.
+- A secret copied by the kernel (`sendfile`, `copy_file_range`) can't be matched by content; the probe
+  still flags the credential file being opened, and notes the copy.
 - Probes see what happens during the probe task; logic triggered later or remotely can still hide.
 - Static review of a large codebase is a careful search, not a full read; reports say which.
 - This is due diligence, not a guarantee. Shared as is.

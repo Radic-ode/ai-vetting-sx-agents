@@ -58,10 +58,15 @@ if [ "$CAP" = secrets ]; then echo "$TAG-configured" > "$H/.probe-credential"; f
 CANARY_RE='/home/probe/(\.ssh|\.aws|\.env|\.config/gh|\.mozilla)'
 
 # --- sandbox: deny-all base, then this probe's single grant
-B=(bwrap --die-with-parent --new-session --unshare-all
-   --ro-bind / /
-   --tmpfs /home --tmpfs /root --tmpfs /mnt --tmpfs /media --tmpfs /run --tmpfs /tmp
-   --dev /dev --proc /proc
+# The root is bwrap's own empty tmpfs (so /work and /out can be created), with the
+# host's system folders bound read-only into it; it is made read-only at the end.
+B=(bwrap --die-with-parent --new-session --unshare-all)
+for d in /*; do
+  case "$d" in /home|/root|/mnt|/media|/run|/tmp|/proc|/dev|/lost+found) continue ;; esac
+  if [ -L "$d" ]; then B+=(--symlink "$(readlink "$d")" "$d"); else B+=(--ro-bind "$d" "$d"); fi
+done
+B+=(--tmpfs /home --tmpfs /root --tmpfs /mnt --tmpfs /media --tmpfs /run --tmpfs /tmp
+   --dev /dev --proc /proc --dir /work --dir /out
    --setenv HOME /home/probe --setenv CANARY_TOKEN "$TAG-envvar" --chdir /work)
 case "$CAP" in
   persist) B+=(--bind "$H" /home/probe) ;;
@@ -78,6 +83,7 @@ case "$CAP" in
   net-out|install|self-update)
     B+=(--share-net --ro-bind-try /run/systemd/resolve /run/systemd/resolve) ;;
 esac   # every other probe: own network namespace, loopback only
+B+=(--remount-ro /)
 
 echo "== probe: $CAP   component: $TARGET"
 echo "== command: $*"
@@ -88,7 +94,7 @@ fi
 
 TRACE="$RUN/trace.log"
 timeout --signal=TERM 120 strace -f -qq -s 256 -o "$TRACE" \
-  -e trace=execve,openat,open,creat,unlink,unlinkat,rename,renameat,renameat2,mkdir,mkdirat,connect,bind,listen,sendto,sendmsg,write \
+  -e trace=execve,openat,open,creat,unlink,unlinkat,rename,renameat,renameat2,mkdir,mkdirat,connect,bind,listen,sendto,sendmsg,write,writev,pwrite64,sendfile,splice,copy_file_range \
   "${B[@]}" "$@" </dev/null
 STATUS=$?
 echo "== command exit status: $STATUS (124 = killed after 120 s)"
@@ -96,6 +102,18 @@ echo "== command exit status: $STATUS (124 = killed after 120 s)"
 # --- ignore bwrap's own setup: start at the first execve of something that isn't bwrap
 awk 'f || (/execve\(/ && !/bwrap/) {f=1; print}' "$TRACE" > "$RUN/t.log"
 T="$RUN/t.log"
+# successful program starts, in order, as "pid path". strace splits a call into
+# "<unfinished ...>" + "<... execve resumed>" when processes overlap: pair them by pid.
+awk '
+  /execve\(/ { p=$0; sub(/^[^"]*execve\("/, "", p); sub(/".*/, "", p); path[$1]=p
+               if ($0 ~ / = 0$/) print $1, p; next }
+  /<\.\.\. execve resumed>/ && / = 0$/ { print $1, path[$1] }
+' "$T" > "$RUN/exec.log"
+# no traced program start means the sandbox itself failed: never report that as a pass
+if [ ! -s "$RUN/exec.log" ]; then
+  echo "== VERDICT: PROBE FAILED: the command never started inside the sandbox (see bwrap error above)"
+  exit 2
+fi
 
 granted() { case " $1 " in *" $CAP "*) return 0 ;; esac; return 1; }
 FOUND=0
@@ -112,8 +130,11 @@ CAN=$(grep -E "open(at)?\(.*\"$CANARY_RE" "$T" | grep -v ' = -1 ' | grep -oE '"[
 [ -n "$CAN" ] && { echo "!! [OUT OF SCOPE] canary credential files OPENED:"; echo "$CAN" | sed 's/^/     /'; FOUND=1; }
 
 # a canary string inside any write/send means a secret (file or $CANARY_TOKEN) left the process
-LEAK=$(grep -E '^[0-9]+ +(write|sendto|sendmsg)\(' "$T" | grep -F "$TAG" | grep -v -- "-configured" | cut -c1-160)
+LEAK=$(grep -E '^[0-9]+ +(write|writev|pwrite64|sendto|sendmsg)\(' "$T" | grep -F "$TAG" | grep -v -- "-configured" | cut -c1-160)
 [ -n "$LEAK" ] && { echo "!! [OUT OF SCOPE] canary value WRITTEN or SENT (exfiltration or logging of secrets):"; echo "$LEAK" | head -10 | sed 's/^/     /'; FOUND=1; }
+# kernel-side copies carry no visible data, so a secret copied this way can't be matched
+KCOPY=$(grep -cE '^[0-9]+ +(sendfile|splice|copy_file_range)\(.* = [1-9]' "$T")
+[ "$KCOPY" -gt 0 ] && [ -n "$CAN" ] && echo "-- note: $KCOPY kernel-side copies (sendfile/splice/copy_file_range) after a canary was opened: the canary contents may have been copied without being visible here"
 
 NET=$(grep -E 'connect\(.*AF_INET6?' "$T" | grep -vE '127\.0\.0\.1|::1"|inet_addr\("127\.' \
       | grep -oE '(inet_addr|inet_pton)\([^)]*\)|sin6?_port=htons\([0-9]+\)' | paste - - 2>/dev/null | sort -u)
@@ -137,8 +158,9 @@ esac
 PERS=$(echo "$WR" | grep -E '/home/probe/(\.bashrc|\.profile|\.zshrc|\.bash_profile|\.config/autostart|\.config/systemd|\.local/share/applications|\.claude)|/etc/(cron|systemd|init)|/var/spool/cron')
 [ -n "$PERS" ] && { echo "!! [persistence locations touched]:"; echo "$PERS" | sed 's/^/     /'; [ "$CAP" = persist ] || FOUND=1; }
 
-FIRST_EXE=$(grep -m1 -oE 'execve\("[^"]+"' "$T" | cut -d'"' -f2)
-EXE=$(grep -E 'execve\(' "$T" | grep -v ' = -1 ' | grep -oE 'execve\("[^"]+"' | cut -d'"' -f2 | grep -vxF "$FIRST_EXE" | sort | uniq -c)
+# the probe command itself = first SUCCESSFUL execve (a bare name fails a few PATH entries first)
+FIRST_EXE=$(head -1 "$RUN/exec.log" | cut -d' ' -f2-)
+EXE=$(tail -n +2 "$RUN/exec.log" | cut -d' ' -f2- | sort | uniq -c)
 report "exec install" "other programs started (count, path):" "$EXE"
 
 if [ "$CAP" = fs-read ] || [ "$CAP" = baseline ]; then

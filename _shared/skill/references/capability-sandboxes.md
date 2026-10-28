@@ -85,7 +85,7 @@ unless the probe's grant is network.
 
 | Backend | Platform | Good for | Notes |
 |---|---|---|---|
-| `scripts/probe.sh` (bubblewrap + strace) | Linux, WSL2 | CLIs, npm/pip/cargo packages, MCP servers over stdio | Ships with this skill. Needs `bwrap` and `strace` (`sudo apt install bubblewrap strace`). Logs every file, network and process syscall. |
+| `scripts/probe.sh` (bubblewrap + strace) | Linux, WSL2 | CLIs, npm/pip/cargo packages, MCP servers over stdio | Ships with this skill. Needs `bwrap` and `strace` (`sudo apt install bubblewrap strace`). Logs every file, network and process syscall. Self-test: `scripts/test_probe.sh scripts/probe.sh` (all cases must PASS before trusting it on a new machine). |
 | Windows Sandbox (`.wsb`) | Windows 10/11 Pro+ | Native Windows apps and installers | Optional Windows feature — the **user** turns it on (Settings → Optional features); never enable it for them. One `.wsb` per probe: `<Networking>Disable</Networking>` unless the grant is network; `<MappedFolder>` with `<ReadOnly>true</ReadOnly>` for the component, a separate writable `out` folder only for `fs-write`. Observe with Sysinternals Process Monitor inside the sandbox, filtered to the component's process tree. Every session is wiped on close. |
 | Docker / Podman | any | Server-style components | `--network none` (or a user-defined network for `net-out`), `--read-only`, `--tmpfs /tmp`, `--cap-drop ALL`, `--security-opt no-new-privileges`, bind-mount `out` only for `fs-write`. |
 | macOS `sandbox-exec` | macOS | CLIs | Deprecated but still works; deny-default profile plus one allow rule per probe. |

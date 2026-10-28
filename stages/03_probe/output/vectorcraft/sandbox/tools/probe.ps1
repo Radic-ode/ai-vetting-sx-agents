@@ -66,7 +66,9 @@ function Diff-Snaps($a, $b) {
 
 # --- observers: Process Monitor (every file/registry/network/process event) + 1 s polling as a backup
 function Start-Watch {
-  & $PM /AcceptEula /Quiet /Minimized /BackingFile "$L\trace.pml"; Start-Sleep 5
+  # trace on the sandbox's own disk: the mapped log folder is too slow for Procmon to close cleanly
+  New-Item -ItemType Directory -Force C:\pm | Out-Null
+  Start-Process $PM -ArgumentList '/AcceptEula /Quiet /Minimized /BackingFile C:\pm\trace.pml'; Start-Sleep 8
   $script:poll = Start-Job -ArgumentList $L {
     param($L)
     while ($true) {
@@ -82,9 +84,13 @@ function Start-Watch {
 }
 function Stop-Watch {
   Stop-Job $script:poll; Remove-Job $script:poll
-  & $PM /Terminate; Start-Sleep 5
-  & $PM /OpenLog "$L\trace.pml" /SaveAs "$L\trace.csv"; Start-Sleep 2
-  while (Get-Process Procmon64 -ErrorAction SilentlyContinue) { Start-Sleep 2 }
+  Start-Process $PM -ArgumentList '/Terminate' -Wait
+  while (Get-Process Procmon, Procmon64 -ErrorAction SilentlyContinue) { Start-Sleep 2 }   # fully closed
+  Start-Sleep 3
+  Step 'converting trace to CSV'
+  Start-Process $PM -ArgumentList '/AcceptEula /OpenLog C:\pm\trace.pml /SaveAs C:\pm\trace.csv' -Wait
+  while (Get-Process Procmon, Procmon64 -ErrorAction SilentlyContinue) { Start-Sleep 2 }
+  Copy-Item C:\pm\trace.pml, C:\pm\trace.csv $L -ErrorAction Continue
   foreach ($f in 'poll-net.txt','poll-procs.txt') { if (Test-Path "$L\$f") { Get-Content "$L\$f" | Sort-Object -Unique | Set-Content "$L\$f" } }
   Get-DnsClientCache -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Entry) -> $($_.Data)" } | Sort-Object -Unique | Set-Content "$L\dns-cache.txt"
   Step 'observers stopped, trace saved'

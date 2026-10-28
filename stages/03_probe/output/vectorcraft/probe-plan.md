@@ -1,6 +1,6 @@
 ---
 run: vectorcraft
-status: AWAITING APPROVAL (written 2026-10-28; nothing run)
+status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). Baseline run 1 done: snapshots ok, Procmon trace unusable (5 GB, not closed). Next: Procmon filter config, rerun baseline.
 backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28), one session per probe
 ---
 

@@ -4,3 +4,9 @@ __pycache__/
 
 # Probe logs can be large and may contain paths from the machine that ran them
 stages/03_probe/output/*/logs/
+
+# Probe inputs that are binaries or machine-specific: fetched or generated locally, never committed
+stages/03_probe/output/*/logs/
+stages/03_probe/output/*/sandbox/tools/*.msi
+stages/03_probe/output/*/sandbox/tools/Procmon*
+stages/03_probe/output/*/sandbox/wsb/

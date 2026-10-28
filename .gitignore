@@ -1,0 +1,6 @@
+# Python
+__pycache__/
+*.pyc
+
+# Probe logs can be large and may contain paths from the machine that ran them
+stages/03_probe/output/*/logs/

@@ -4,7 +4,7 @@
 # C:\probe\logs   writable: everything this probe records (copied out to the host by the mapping)
 # C:\probe\out    writable, fs-write and mcp-call-* probes only
 param([Parameter(Mandatory)][ValidateSet('baseline','install','net-out','self-update','net-listen',
-      'fs-read','fs-write','exec','secrets','persist','agent-text','mcp-call-unscoped','mcp-call-scoped')][string]$Probe)
+      'fs-read','fs-write','exec','secrets','persist','agent-text','mcp-call-unscoped','mcp-call-scoped','mcp-call-commands','mcp-call-links')][string]$Probe)
 
 $ErrorActionPreference = 'Continue'
 $T = 'C:\probe\tools'; $L = 'C:\probe\logs'
@@ -190,7 +190,8 @@ switch ($Probe) {
     if (-not $p.WaitForExit(30000)) { $p.Kill(); Step 'mcp server did not exit on end of input; killed after 30 s' }
     Stop-Watch }
   { $_ -like 'mcp-call-*' } {   # network off. Call the MCP tools for real; one pass per session:
-                                # mcp-call-unscoped (A), mcp-call-scoped (B, with the automation roots)
+                                # mcp-call-unscoped (A), mcp-call-scoped (B, with the automation roots);
+                                # mcp-call-commands / -links (probe 13): the roots against command ids and links
     $pass = $Probe -replace '^mcp-call-', ''
     # an extra canary only an SVG reader would open, so a refusal can't just be "unsupported file type"
     $tag = Get-Content "$L\canary-tag.txt"; $docs = [Environment]::GetFolderPath('MyDocuments')
@@ -204,6 +205,15 @@ switch ($Probe) {
     $hp = Start-Process $CLI -ArgumentList 'mcp --help' -RedirectStandardInput "$L\empty.txt" -RedirectStandardOutput "$L\mcp-help.txt" `
           -RedirectStandardError "$L\mcp-help-stderr.txt" -NoNewWindow -PassThru
     if (-not $hp.WaitForExit(15000)) { $hp.Kill(); Step 'mcp --help did not exit; killed after 15 s' }
+    if ($pass -eq 'links') {   # roots on the sandbox's own disk, so no link is ever made in a host-mapped folder
+      New-Item -ItemType Directory -Force C:\work\in, C:\work\out | Out-Null
+      Copy-Item "$T\test.svg" C:\work\in\
+      & { cmd /c mklink "C:\work\in\canary-link.svg" "$cs"
+          cmd /c mklink /J "C:\work\in\win-junction" "C:\Windows"
+          cmd /c mklink /J "C:\work\out\desk-junction" "$desk" } 2>&1 | Set-Content "$L\links-made.txt"
+      Get-ChildItem C:\work\in, C:\work\out -Force | ForEach-Object { "$($_.FullName) [$($_.Attributes)] -> $($_.Target)" } | Add-Content "$L\links-made.txt"
+      Step 'links made under C:\work (links-made.txt)'
+    }
     Start-Watch
     function Run-Pass($name, $argList, $calls) {
       $lines = @('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}',
@@ -233,8 +243,65 @@ switch ($Probe) {
       ,@('render_preview', @{ max_side = 256 }, 'inline png')
       ,@('export', @{ path = $exp }, 'in-root export')
       ,@('open_file', @{ path = "$T\test.svg" }, 'in-root open')) }
+    $scopedArgs = "mcp --headless --automation-read-root $T --automation-write-root C:\probe\out"
     if ($pass -eq 'unscoped') { Run-Pass 'unscoped' 'mcp --headless' ((& $common 'C:\probe\out\a.svg') + @(
       ,@('export', @{ path = "$desk\control.svg" }, 'CONTROL out-of-root export, unscoped'))) }
+    elseif ($pass -eq 'commands') {
+      # 1. discovery, read-only
+      Run-Pass 'discovery' $scopedArgs @(foreach ($f in 'open','save','export','place','import') { ,@('command_list', @{ filter = $f; brief = $true }, "filter $f") })
+      $found = @()
+      foreach ($line in Get-Content "$L\mcp-responses-discovery.jsonl") {
+        # PS 5.1's ConvertFrom-Json hands back a JSON array as one object: enumerate it explicitly
+        try { $o = ConvertFrom-Json $line
+              if ($o.result.content) { $arr = ConvertFrom-Json $o.result.content[0].text
+                if ($arr -isnot [array] -and $arr.commands) { $arr = $arr.commands }   # list_commands shape {count, commands}
+                foreach ($x in $arr) { $found += $x } } } catch { Step "discovery reply not parsed: $_" }
+      }
+      # 2. the selection rule approved in probe-plan.md (probe 13)
+      $inc = 'open|save|export|place|import'; $exc = 'print|reveal|recent|revert|close|quit|browse|dialog|url|web|package'
+      $pick = @('document.save', 'document.export')
+      foreach ($c in $found) {
+        $txt = "$($c.id) $($c.label)"
+        if ($pick.Count -ge 8) { break }
+        if ($c.id -and $txt -match $inc -and $txt -notmatch $exc -and $pick -notcontains $c.id) { $pick += $c.id }
+      }
+      $found | ForEach-Object { "$($_.id) | $($_.label) | $($_.menu)" } | Sort-Object -Unique | Set-Content "$L\commands-found.txt"
+      Set-Content "$L\commands-chosen.txt" $pick
+      Step "commands chosen: $($pick -join ', ')"
+      # 3. each chosen command: in-root control, then out of root, by four routes
+      $calls = @(,@('run_command', @{ command = 'file.new'; params = @{ width = 800; height = 600 } }, 'new document')
+                 ,@('draw_shape', $rect, 'rectangle'))
+      $n = 0
+      foreach ($cmd in $pick) {
+        $n++
+        $isRead = ($cmd -match 'open|place|import') -and ($cmd -notmatch 'save|export')
+        if ($isRead) { $tries = @(@("$T\test.svg", 'IN'), @($cs, 'OUT canary svg'), @('C:\Windows\win.ini', 'OUT win.ini')) }
+        else { $tries = @(@('C:\probe\out\cmd-{0}-{1}.svg', 'IN'), @("$desk\cmd-{0}-{1}.svg", 'OUT Desktop')) }
+        foreach ($route in 'run_command', 'command_run', 'command_batch', 'invoke_menu') {
+          foreach ($try in $tries) {   # not $t: names ignore case, and $T is the tools folder
+            $path = $try[0] -f $n, $route
+            $prm = @{ path = $path }
+            $a = switch ($route) {
+              'run_command'   { @{ command = $cmd; params = $prm } }
+              'command_run'   { @{ id = $cmd; params = $prm } }
+              'command_batch' { @{ steps = @(@{ id = $cmd; params = $prm }); stop_on_error = $false } }
+              'invoke_menu'   { @{ command = $cmd; params = $prm } }
+            }
+            $calls += ,@($route, $a, "$($try[1]) $cmd $path")
+          }
+        }
+      }
+      Run-Pass 'commands' $scopedArgs $calls }
+    elseif ($pass -eq 'links') {
+      Run-Pass 'links' 'mcp --headless --automation-read-root C:\work\in --automation-write-root C:\work\out' @(
+        ,@('run_command', @{ command = 'file.new'; params = @{ width = 800; height = 600 } }, 'new document')
+        ,@('draw_shape', $rect, 'rectangle')
+        ,@('export', @{ path = 'C:\work\out\a.svg' }, 'IN export')
+        ,@('open_file', @{ path = 'C:\work\in\test.svg' }, 'IN open')
+        ,@('open_file', @{ path = 'C:\work\in\canary-link.svg' }, 'OUT symlink to canary svg')
+        ,@('open_file', @{ path = 'C:\work\in\win-junction\win.ini' }, 'OUT junction to C:\Windows')
+        ,@('export', @{ path = 'C:\work\out\desk-junction\j.svg' }, 'OUT export through junction to Desktop')
+        ,@('save_file', @{ path = 'C:\work\out\desk-junction\j.svg' }, 'OUT save through junction to Desktop')) }
     else { Run-Pass 'scoped' "mcp --headless --automation-read-root $T --automation-write-root C:\probe\out" ((& $common 'C:\probe\out\b.svg') + @(
       ,@('save_file', @{ path = 'C:\probe\out\b-saved.svg' }, 'in-root save')
       ,@('screenshot', @{ path = 'C:\probe\out\b.png' }, 'in-root screenshot')
@@ -252,7 +319,16 @@ switch ($Probe) {
         "== $desk";        Get-ChildItem $desk -Force | ForEach-Object { "$($_.Name) $($_.Length)" }
         '== out-of-root targets (exists?)'
         foreach ($f in "$desk\control.svg", "$desk\x.svg", "$desk\x.vectorcraft", "$desk\x.png", 'C:\probe\escape.svg') { "$(Test-Path $f) $f" }
-      } | Set-Content "$L\out-files.txt" }
+        if ($pass -eq 'links') {
+          '== C:\work\in'; Get-ChildItem C:\work\in -Force | ForEach-Object { "$($_.Name) $($_.Length) [$($_.Attributes)]" }
+          '== C:\work\out'; Get-ChildItem C:\work\out -Force | ForEach-Object { "$($_.Name) $($_.Length) [$($_.Attributes)]" }
+          "$(Test-Path "$desk\j.svg") $desk\j.svg" }
+      } | Set-Content "$L\out-files.txt"
+    if ($pass -eq 'links') {   # plain files only: copying the junction would follow it into the Desktop
+      New-Item -ItemType Directory -Force "$L\work-out" | Out-Null
+      Get-ChildItem C:\work\out -File -Force | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+        Copy-Item -Destination "$L\work-out\" }
+  }
 }
 
 # no self-shutdown: a guest Stop-Computer left the host's Windows Sandbox window hung (fs-write), so a person

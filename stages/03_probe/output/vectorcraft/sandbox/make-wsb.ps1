@@ -10,8 +10,8 @@ $wsb   = Join-Path $here 'wsb'
 New-Item -ItemType Directory -Force $wsb | Out-Null
 
 $networked = 'net-out', 'self-update'
-$probes = 'baseline','install','persist','net-out','self-update','net-listen','fs-read','fs-write','exec','secrets','agent-text','mcp-call-unscoped','mcp-call-scoped'
-$withOut = 'fs-write', 'mcp-call-unscoped', 'mcp-call-scoped'   # these also get C:\probe\out, from ..\logs\<probe>-out
+$probes = 'baseline','install','persist','net-out','self-update','net-listen','fs-read','fs-write','exec','secrets','agent-text','mcp-call-unscoped','mcp-call-scoped','mcp-call-commands','mcp-call-links'
+$withOut = 'fs-write', 'mcp-call-unscoped', 'mcp-call-scoped', 'mcp-call-commands'   # these also get C:\probe\out, from ..\logs\<probe>-out
 
 foreach ($p in $probes) {
   $log = Join-Path $logs $p

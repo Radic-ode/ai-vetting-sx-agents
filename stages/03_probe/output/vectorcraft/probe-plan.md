@@ -1,6 +1,6 @@
 ---
 run: vectorcraft
-status: 11 probes DONE 2026-10-29 (all Within scope; self-update's update step Not run: never offered). Probe 12 `mcp-call` added 2026-10-29 and approved by the user as written (additions included) the same day; at the user's request its two passes then became two probes, each in its own sandbox session: `mcp-call-unscoped` and `mcp-call-scoped`. Both DONE 2026-10-29, Within scope; see probe-results.md.
+status: 11 probes DONE 2026-10-29 (all Within scope; self-update's update step Not run: never offered). Probe 12 `mcp-call` added 2026-10-29 and approved by the user as written (additions included) the same day; at the user's request its two passes then became two probes, each in its own sandbox session: `mcp-call-unscoped` and `mcp-call-scoped`. Both DONE 2026-10-29, Within scope; see probe-results.md. Probe 13 (`mcp-call-commands`, `mcp-call-links`) added 2026-10-29 and approved by the user as written the same day; both DONE 2026-10-29, Within scope.
 backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28), one session per probe
 ---
 
@@ -48,6 +48,7 @@ backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28),
 | 10 | `secrets` | canaries present | normal use 2 min: shapes, menus, open/save dialogs (cancelled) | no canary file opened, `CANARY_TOKEN` never written or sent | no | 2 min of use |
 | 11 | `agent-text` | none | `vectorcraft-cli mcp --headless`; ask it for its tool, prompt and resource lists | descriptions match what the tools do; nothing tells an agent to fetch, run, send or hide anything. I review the text on the host as **data** | no | none |
 | 12 | `mcp-call-unscoped`, `mcp-call-scoped` | write `C:\probe\out`; tools folder read-only | call MCP tools for real: unscoped in one session, scoped with the root options in another (detail below) | unscoped: every call does what its description says and writes only where told; scoped: in-root calls work, **every** out-of-root call is refused with nothing read or written outside the roots | no | none |
+| 13 | `mcp-call-commands`, `mcp-call-links` | as 12 (`-links`: roots on the sandbox's own disk, no out mapping) | scoped server only: out-of-root file operations through engine commands, then through links inside a root (detail below) | every out-of-root attempt refused, nothing read or written outside the roots | no | none |
 
 ### Probe 12 `mcp-call` in detail (added 2026-10-29, after the other 11 had run)
 **Why:** `agent-text` only listed the tools. The report's MCP advice rests on `--automation-read-root` /
@@ -95,6 +96,59 @@ fresh sandbox session and log folder, so pass B starts from a clean machine; eac
 - Verdict rule: any out-of-root file opened or written in pass B → **OUT OF SCOPE** (the scoping fails), with
   the exact path.
 
+### Probe 13 in detail (added 2026-10-29, after probe 12)
+**Why:** probe 12 showed the roots confine `open_file`, `export`, `save_file` and `screenshot`. Two ways around
+them were left untested. One is the same file operations run as engine commands by id. The other is a link
+inside a root that points outside it. The report's Blast Radius score waits on both. Every server in this probe
+is started **with** the root options. Same grant as probe 12: networking off, tools folder read-only, canaries
+plus `Documents\canary-drawing.svg`. Each probe runs in its own fresh sandbox, with no clicks.
+
+**`mcp-call-commands`** (roots `C:\probe\tools` / `C:\probe\out`, as in probe 12 pass B):
+1. **Discovery** (read-only): one server process, `command_list` with `filter` `open`, `save`, `export`,
+   `place` and `import` in turn. The replies are saved.
+2. **Selection rule, fixed now:** the commands called are `document.save` and `document.export` (named in the
+   tool text), plus at most 6 more from the discovery replies whose id or label contains open, save, export,
+   place or import. Excluded: any id or label containing print, reveal, recent, revert, close, quit, browse,
+   dialog, url, web or package. The script writes the chosen list to the log before anything is called.
+3. **Calls**, in a second server process: `file.new` and `draw_shape` first, so there is a document. Then, for
+   each chosen command:
+   - in-root control: a write command → `C:\probe\out\cmd-<n>.<ext>`; a read command → `C:\probe\tools\test.svg`.
+     This tells "refused by the root" apart from "wrong parameters";
+   - out of root: a write → `%USERPROFILE%\Desktop\cmd-<n>.<ext>`; a read → `Documents\canary-drawing.svg`, then
+     `C:\Windows\win.ini`.
+
+   Each is sent four ways: `run_command`, `command_run`, a step in `command_batch`, and `invoke_menu`. The
+   parameter is `path`, which is what `save_file` / `export` pass to `document.save` / `document.export`. A
+   command that rejects `path` even in the root is recorded as "not exercised", not as a pass.
+4. Not called: anything outside the selection rule, print, reveal, `press_key`, `type_text`, `ui_*`,
+   `pointer_gesture`.
+
+**`mcp-call-links`** (roots on the sandbox's own disk, so no link is ever created in a folder mapped from the
+host):
+1. The script creates `C:\work\in` (a copy of `test.svg`) and `C:\work\out`, plus three links, before the
+   server starts:
+   - `C:\work\in\canary-link.svg`: file symlink → `Documents\canary-drawing.svg`;
+   - `C:\work\in\win-junction`: junction → `C:\Windows`;
+   - `C:\work\out\desk-junction`: junction → `%USERPROFILE%\Desktop`.
+2. Server: `mcp --headless --automation-read-root C:\work\in --automation-write-root C:\work\out`.
+3. Calls:
+   - in-root controls: `open_file` `C:\work\in\test.svg`, `export` → `C:\work\out\a.svg`;
+   - through the links: `open_file` `C:\work\in\canary-link.svg`, `open_file`
+     `C:\work\in\win-junction\win.ini`, `export` → `C:\work\out\desk-junction\j.svg`, `save_file` →
+     `C:\work\out\desk-junction\j.svg`.
+4. Afterwards the script copies `C:\work\out`'s listing and files and the Desktop listing to the log folder.
+
+**Expected footprint (written before running):**
+- Both: in-root controls succeed. Every out-of-root attempt, whether by command id, batch, menu id or link,
+  returns the root-rejection error. The trace shows no read of the canaries or `win.ini` and no file created
+  on the Desktop by the server. As in probe 12, attribute-only handles used to resolve a path are noted but
+  don't count as a read.
+- Verdict rule: out-of-root content read, or a file written outside the roots → **OUT OF SCOPE**, naming the
+  command or link and the path.
+- **Known limit, not tested:** a *hard* link inside a root is the same file as its target, and no path check
+  can see that. Path-based confinement doesn't cover it, so it is out of this probe's scope. The report notes
+  it as such.
+
 Probes 1, 2 and 3 each include the MSI install; the other probes install it before observing, so their
 trace shows only the probe's own task.
 
@@ -111,6 +165,9 @@ trace shows only the probe's own task.
 - The MCP server is probed headless. The `--connect` mode is covered by `net-listen` only as a port.
 
 ## What needs your yes before anything runs
+00. **Probe 13** (`mcp-call-commands`, `mcp-call-links`): the task above, including the command-selection rule
+    (some commands are picked from the discovery reply inside the sandbox) and the three links created on the
+    sandbox's own disk. Networking stays off.
 0. **Probe 12 `mcp-call`** (added after the others ran): the task above, including my two additions (the
    unscoped Desktop control in pass A and the two traversal attempts in pass B). Networking stays off.
 1. **This plan**, all 11 probes.

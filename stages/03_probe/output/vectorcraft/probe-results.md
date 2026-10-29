@@ -21,6 +21,8 @@ backend: Windows Sandbox, one fresh session per probe (see probe-plan.md)
 | agent-text | Within scope (2026-10-29): text accurate, no instructions to the agent; file tools take any path |
 | mcp-call-unscoped | Within scope (2026-10-29): 8 calls, each result as described; the Desktop control export was written (unscoped = any path) |
 | mcp-call-scoped | Within scope (2026-10-29): in-root calls work; **all 9 out-of-root calls refused**, traversal included; no out-of-root file read or written (only metadata handles for path resolution) |
+| mcp-call-commands | Within scope (2026-10-29): 5 file commands × 4 routes (`run_command`, `command_run`, `command_batch`, `invoke_menu`): every in-root call worked, **all 40 out-of-root calls refused**; 2 chosen commands take no `path` (not exercised) |
+| mcp-call-links | Within scope (2026-10-29): a file symlink and two junctions inside the roots, pointing out: **all 4 attempts refused**, nothing read or written through them |
 
 ## baseline
 
@@ -436,13 +438,93 @@ my judgement on the rule's wording. Read strictly, the rule would flag it, so it
 - Not tested: `--connect` mode with the root options.
 - Unscoped is the default, and the control export shows it reaches any path the account can write.
 
+*(The two "not tested" gaps above were then probed: see probe 13 below.)*
+
+## mcp-call-commands and mcp-call-links (probe 13)
+
+Added after probe 12 to close its two gaps, and approved by the user as written. Each ran in its own fresh
+sandbox, networking off, no clicks, with every server started **with** the root options. Canaries were planted
+as in probe 12.
+
+### mcp-call-commands
+**Run.** 2026-10-29 13:33, `logs/mcp-call-commands/`. Roots `C:\probe\tools` (read) and `C:\probe\out` (write).
+The server confirmed them on stderr (`files confined: read C:\probe\tools\; write C:\probe\out\`). Two server
+processes ran:
+- PID 2208, discovery: five `command_list` calls; 83 matching commands, in `commands-found.txt`;
+- PID 4832: 78 calls.
+
+Both answered every request and exited at end of input. The trace closed cleanly (287 MB).
+
+**Selection** (the approved rule, applied by the script; `commands-chosen.txt`): `document.save`,
+`document.export`, `document.open`, `select.object.openPaths`, `file.open`, `document.exportPresets.save`,
+`document.exportForOffice`, `file.saveAs`. The rule took the first six matches in discovery order. Commands
+such as `file.place`, `file.saveCopy` and `file.export` came later and were not reached. The cap of 8 was set
+in the plan, and the chosen set covers the open, save, save-as and export paths.
+
+**Per command** (each sent by `run_command`, `command_run`, one `command_batch` step and `invoke_menu`):
+
+| # | Command | In-root control (×4) | Out of root (×4 each) |
+|---|---|---|---|
+| 1 | `document.save` | wrote `cmd-1-<route>.svg` (367–369 B) | Desktop: **refused** ×4 |
+| 2 | `document.export` | wrote `cmd-2-<route>.svg` (367 B) | Desktop: **refused** ×4 |
+| 3 | `document.open` | opened `test.svg` | canary SVG: **refused** ×4; `win.ini`: **refused** ×4 |
+| 4 | `select.object.openPaths` | `invalid parameters: … the command takes no parameters` | same error. **Not exercised**: it selects open paths in the drawing and isn't a file command (matched "open") |
+| 5 | `file.open` | opened `test.svg` | canary SVG: **refused** ×4; `win.ini`: **refused** ×4 |
+| 6 | `document.exportPresets.save` | `invalid parameters: unknown parameter path; the command takes: name, settings` | same error. **Not exercised**: it saves a named preset, with no path |
+| 7 | `document.exportForOffice` | wrote `cmd-7-<route>.svg` (6,748 B; fallback-font warning) | Desktop: **refused** ×4 |
+| 8 | `file.saveAs` | wrote `cmd-8-<route>.svg` (683 B) | Desktop: **refused** ×4 |
+
+Each refusal is the same root-rejection error as probe 12, raised by the route's own name
+(`run_command: automation path rejected: outside the write root C:\probe\out\: <path>`). In a batch it shows as
+the step's `error` with `failed: 1`. So the check sits under the tools, in the engine's command path, and
+covers every route tried.
+
+### mcp-call-links
+**Run.** 2026-10-29 13:34, `logs/mcp-call-links/`. Before observing, the script created `C:\work\in` (holding
+`test.svg`) and `C:\work\out`, plus three links (`links-made.txt`, all confirmed created):
+- `C:\work\in\canary-link.svg` → `Documents\canary-drawing.svg` (file symlink);
+- `C:\work\in\win-junction` → `C:\Windows`;
+- `C:\work\out\desk-junction` → the Desktop.
+
+Server PID 2508, roots `C:\work\in` / `C:\work\out` (stderr: `files confined: read C:\work\in; write C:\work\out`).
+It answered all 8 calls and exited. The trace closed cleanly (281 MB). One harmless script error at the end:
+the shared listing step tried to list `C:\probe\out`, which this probe doesn't map. The rest of `out-files.txt`
+was written.
+
+| Call | Result |
+|---|---|
+| `export` → `C:\work\out\a.svg` (control) | written, 360 B (copied to `work-out/`) |
+| `open_file` `C:\work\in\test.svg` (control) | opened |
+| `open_file` `C:\work\in\canary-link.svg` | **refused**: `outside the read root C:\work\in: C:\work\in\canary-link.svg` |
+| `open_file` `C:\work\in\win-junction\win.ini` | **refused** |
+| `export` → `C:\work\out\desk-junction\j.svg` | **refused** |
+| `save_file` → `C:\work\out\desk-junction\j.svg` | **refused** |
+
+The message repeats the path as given and doesn't say where the link leads. In the trace, the server followed
+each link (`REPARSE`, then the target) to find where it really points, and refused because the target lies
+outside the root.
+
+### Expected against observed (both)
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| in-root controls succeed | every control that took a `path` succeeded: 16 files in `C:\probe\out` by temp + rename, `a.svg` in `C:\work\out`, every in-root open | as expected |
+| every out-of-root attempt, by command id, batch, menu id or link, returns the root-rejection error | 40 of 40 by command, 4 of 4 by link | as expected |
+| no read of the canaries or `win.ini`, no file created on the Desktop | the opens on out-of-root targets were all `Desired Access: Read Attributes, Synchronize`: 64 by PID 4832, 13 by PID 2508. Each was followed only by name queries and a close. **0** `ReadFile`, `WriteFile`, rename or delete on any of them. The Desktop holds only `desktop.ini` afterwards. `trace-tree.py` lists those attribute opens as canary hits (8 + 1), as in probe 12 | as expected (same note as probe 12) |
+| (every probe) no network, no child process, no canary in output | no network events, no process created by the server, registry writes only `RegSetInfoKey`; the canary tag appears in no reply or output file | as expected |
+
+**Still not covered:** commands that matched the rule but fell past the cap (`file.place`, `file.saveCopy`,
+`file.export`, `document.exportPdf`, …). The check sits in the shared command path, so they are likely covered,
+but that is inferred, not observed. Hard links, which no path check can see (stated in the plan). `--connect`
+mode.
+
 ## Outside the method (noted, not a probe)
 The user installed and launched the app on their own machine on 2026-10-28, against this run's
 then-pending report. It started normally. Nothing was monitored, so this is not evidence of what it
 did or did not do.
 
 ## Summary for 04_report
-- **All 11 planned probes ran** (plus `mcp-call`, below). 10 are **Within scope**. `self-update` is also Within scope, but its update step is
+- **All 11 planned probes ran** (plus `mcp-call` and probe 13, below). 10 are **Within scope**. `self-update` is also Within scope, but its update step is
   **Not run: update never offered**.
 - **No OUT OF SCOPE line.** No canary was opened in any probe. Nothing was set to start on its own. There was
   no network contact at all, even online. The control port is loopback-only. Writes went only to the granted
@@ -450,14 +532,18 @@ did or did not do.
 - **`mcp-call` (added later, two probes, both Within scope):** the MCP tools did what they describe. With
   `--automation-read-root` / `--automation-write-root` set, all 9 out-of-root calls to the four file tools were
   refused, `..` traversal included, with no out-of-root content read or written.
+- **Probe 13 (`mcp-call-commands`, `mcp-call-links`, both Within scope):** the roots also held for file commands
+  run by id. 5 commands × 4 routes gave 40 of 40 refusals. They held for symlinks and junctions inside a root
+  pointing out: 4 of 4 refused. Out of root there were only attribute-only opens to resolve the path.
 - **Unobserved:** the update download, replacement and signature check (three online launches, no update
   check). The rest of the print script past 4,070 characters (only its behaviour was observed). `--connect`
-  mode, a real reboot. Under scoping: file commands reached through `run_command` / `command_batch` /
-  `invoke_menu`, `vectorcraft://` resource reads, and links that point out of a root.
+  mode, a real reboot. Under scoping: file commands past the probe's cap of 8 (likely covered, since the check
+  sits in the shared command path), and hard links, which no path check can see.
 - **For Blast Radius:** by default the MCP file tools (`open_file`, `save_file`, `export`, `screenshot`) take any
   path (shown in `mcp-call-unscoped`), and `run_command` reaches every menu command, including print and reveal.
-  The root options confine those four tools (shown in `mcp-call-scoped`). Whether they also confine
-  `run_command` is untested. The installer adds an all-users desktop shortcut.
+  The root options confine those four tools (shown in `mcp-call-scoped`). They also confine file commands
+  run through `run_command`, `command_run`, `command_batch` and `invoke_menu`, and links out of a root (probe
+  13). The installer adds an all-users desktop shortcut.
 - **Method notes:**
   - Procmon `System` events were dropped until `self-update`. Network results before that also rest on the
     poll and loaded libraries.

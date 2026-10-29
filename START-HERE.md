@@ -16,8 +16,10 @@ need to run commands.
 2. **Nothing from a component runs before a person approves the probe plan.** Approval is a line that the
    **person** adds to `probe-plan.md`:
    `APPROVED: <ALL | probe ids, comma-separated> by <name> on <YYYY-MM-DD>`
-   **Never write, edit or suggest the text of that line yourself.** The probe runners refuse to start
-   without it.
+   **Never write, edit or suggest the text of that line yourself.** As a guardrail, the probe runners look
+   for a line covering the probe and refuse without one. On Windows, `make-wsb.ps1` checks when it generates
+   the `.wsb` files. The runners can't tell who wrote the line, or whether the plan changed after it was
+   added. So if the plan changes, ask the person to approve it again; nothing enforces that.
 3. **Never run a component outside a sandbox.** If no sandbox is available, record the probes as "Not run:
    no sandbox". Never fall back to the real machine.
 4. **Downloads go into their own new, empty folder, outside this workspace.** Scripts that read them run from
@@ -37,7 +39,7 @@ install anything yourself; the person decides. (Full list: `README.md`, Requirem
 
 | Needed for | Check |
 |---|---|
-| every run | `git` |
+| runs that clone or verify a repository | `git` |
 | intake | a SHA-256 tool (`Get-FileHash` or `sha256sum`); `gh` and 7-Zip are optional |
 | Windows probes | Windows Sandbox is turned on (`WindowsSandbox.exe` exists); `Procmon64.exe` is in the run's `sandbox/tools/` (it is not in the repository: the person downloads it from Microsoft Sysinternals and decides on its licence); Python 3 for `trace-tree.py` |
 | Linux/WSL2 probes | `bwrap`, `strace` and `timeout` are on the PATH |

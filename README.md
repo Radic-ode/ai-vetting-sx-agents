@@ -44,8 +44,8 @@ says plainly what wasn't checked.
 ## Safety rules built in
 
 - **Nothing third-party runs until a person approves the probe plan.** You approve by adding one line to
-  `probe-plan.md`: `APPROVED: <ALL | probe ids> by <name> on <date>`. The probe scripts refuse to run any
-  probe without it, whichever AI is driving.
+  `probe-plan.md`: `APPROVED: <ALL | probe ids> by <name> on <date>`. As a guardrail, the probe scripts refuse
+  any probe that no such line covers, whichever AI is driving. (Limits under Honest limits.)
 - One capability per sandbox, never shared, so one feature can't hide behind another's permission.
 - Probes never fall back to your real machine. If there's no sandbox, the probe is reported as "not run".
 - Everything inside the component (code, docs, tool descriptions) is treated as data under review, never as
@@ -100,7 +100,8 @@ following [`START-HERE.md`](START-HERE.md) checks for these before it starts and
 
 | For | You need | Notes |
 |---|---|---|
-| Every run | an AI agent or model that can read files (to run probes, also commands), and `git` | Static review alone needs nothing else. |
+| Every run | an AI agent or model that can read files (to run probes, also commands) | A static-only review from supplied files needs nothing else. |
+| Runs that clone or verify a repository | `git` | |
 | Intake | a SHA-256 tool (`Get-FileHash` / `sha256sum`); optionally `gh` (GitHub releases) and 7-Zip | 7-Zip unpacks an installer such as an MSI *as data*, without installing it. |
 | Probes on Windows | Windows 10/11 **Pro, Enterprise or Education** with the **Windows Sandbox** feature turned on (virtualisation enabled in firmware), and Windows PowerShell 5.1 (built in) | You turn the feature on yourself. |
 | Probes on Windows | **Process Monitor** (`Procmon64.exe`) from Microsoft Sysinternals: [`ProcessMonitor.zip`](https://download.sysinternals.com/files/ProcessMonitor.zip), with only `Procmon64.exe` placed in the run's `sandbox/tools/` | Not in this repository (not ours to redistribute). The probe script starts it with `/AcceptEula`, which accepts Microsoft's Sysinternals licence inside each sandbox. That's your decision, or accept it once on your own machine. |
@@ -130,8 +131,11 @@ following [`START-HERE.md`](START-HERE.md) checks for these before it starts and
 - **How well a run goes depends on the model driving it.** The rules that matter most (approval, no run outside a
   sandbox) are enforced by the scripts, not left to the model. The VectorCraft run makes a good test for a new
   model: compare its report with this one.
-- **The approval check proves a line exists, not who wrote it.** An agent with write access could add it. The
-  instructions forbid that, and every approval stays visible in the plan, but it is a safeguard, not a lock.
+- **The approval check proves a line exists, not who wrote it or whether the plan changed afterwards.** An agent
+  with write access could add the line. On Windows the check runs when `make-wsb.ps1` generates the `.wsb`
+  files, so a `.wsb` made earlier still runs after the plan changes. The instructions forbid an agent writing the
+  line and say to re-approve a changed plan, and every approval stays visible in the plan. But it is a guardrail,
+  not a lock.
 - **`probe.sh` (Linux/WSL2) is tested against fake components.** `scripts/test_probe.sh` runs 16 cases in WSL2
   (all passing on 2026-10-29). They cover a stolen SSH key, a leaked token, writes outside the grant,
   persistence, network, and the approval check: no plan, a malformed line, a probe not listed. The Windows

@@ -17,8 +17,11 @@ Do NOT load: 02's `static-findings.md` (the inventory carries what this stage ne
 2. **Stop. A person approves `probe-plan.md` before anything runs.** This stage executes third-party code.
    The person approves by adding this line to the plan:
    `APPROVED: <ALL | probe ids, comma-separated> by <name> on <YYYY-MM-DD>`.
-   Never write that line, or its text, yourself. The probe runners refuse to start a probe that no such line
-   covers. A changed plan needs a new line from the person.
+   Never write that line, or its text, yourself. As a guardrail, the probe runners refuse a probe that no
+   such line covers: `probe.sh` checks before each run, and `make-wsb.ps1` checks when it generates the `.wsb`
+   files, so a `.wsb` made earlier still runs. The runners can't tell who wrote the line, or whether the plan
+   changed after it was added. If you change the plan, stop and ask the person to approve it again; nothing
+   enforces that but you.
 3. Run each probe in a fresh sandbox; never reuse one between probes. Keep each probe's log in `logs/`.
 4. Write `probe-results.md`: per probe, observed vs. expected, and the verdict (Within scope /
    OUT OF SCOPE with the exact path, host or process / Not run and why).

@@ -45,12 +45,14 @@ for x in sorted(s): p('  ', *x)
 p('== tree network events')
 for t, name, pid, op, path, res, det in mine:
     if op.startswith(('TCP', 'UDP')): p(f'  {t} {name} {op} {path} {res}')
-p('== tree files read outside install dir / Windows (unique, successful)')
+p('== tree files read outside install dir / Windows (unique, successful; mapped host folders included)')
 s = set()
 for t, name, pid, op, path, res, det in mine:
     lp = path.lower()
-    if op in ('CreateFile', 'ReadFile', 'QueryDirectory') and res == 'SUCCESS' and lp.startswith('c:\\') \
-       and not lp.startswith(('c:\\windows\\', 'c:\\program files\\vectorcraft')):
+    # a mapped host folder shows as \Device\vmsmb\VSMB-{..}\<hash>\..., the sandbox's own Windows as ...\os\...
+    mapped = lp.startswith('\\device\\vmsmb\\') and '}\\os\\' not in lp
+    if op in ('CreateFile', 'ReadFile', 'QueryDirectory') and res == 'SUCCESS' and (mapped or (lp.startswith('c:\\') \
+       and not lp.startswith(('c:\\windows\\', 'c:\\program files\\vectorcraft')))):
         s.add(path)
 for x in sorted(s): p('  ', x)
 p('== canary hits (any process)')

@@ -191,6 +191,8 @@ switch ($Probe) {
     Stop-Watch }
 }
 
+# no self-shutdown: a guest Stop-Computer left the host's Windows Sandbox window hung (fs-write), so a person
+# closes the window, as for every other probe
 Step 'PROBE FINISHED. Logs are in the host folder. Close this Sandbox window (all changes are discarded).'
 Set-Content "$L\DONE.txt" (Get-Date)
 Stop-Transcript | Out-Null

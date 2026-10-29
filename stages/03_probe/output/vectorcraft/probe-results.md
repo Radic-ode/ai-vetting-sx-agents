@@ -13,12 +13,12 @@ backend: Windows Sandbox, one fresh session per probe (see probe-plan.md)
 | persist | Within scope (2026-10-29) |
 | net-out | Within scope (2026-10-29): **no connection at all**, where an update check was expected |
 | self-update | Within scope (2026-10-29), but **the update path was never triggered**: no check, no prompt, no download |
-| net-listen | Not run yet |
-| fs-read | Not run yet |
-| fs-write | Not run yet |
+| net-listen | Within scope (2026-10-29): `127.0.0.1:7979` only |
+| fs-read | Within scope (2026-10-29) |
+| fs-write | Within scope (2026-10-29) |
 | exec | Not run yet |
 | secrets | Not run yet |
-| agent-text | Not run yet |
+| agent-text | Within scope (2026-10-29): text accurate, no instructions to the agent; file tools take any path |
 
 ## baseline
 
@@ -198,3 +198,98 @@ A check from a menu, if VectorCraft has one, was not tried; it isn't in the appr
 (`Ethernet 4`, Remote NDIS) dropped and stayed down until the user reconnected it, twice. The host's System log
 shows Hyper-V reinitialising its virtual switches (Default Switch, WSL) at 10:46:55. The sandbox stayed online
 apart from those drops: the DNS log shows Windows' own lookups succeeding throughout both launches.
+
+## net-listen
+
+**Run.** 2026-10-29 11:06, `logs/net-listen/`, networking off (loopback works). `vectorcraft --control 7979`,
+PID 860, started at 11:07:13. The listener snapshot was taken 15 s later. The user closed the app, and the
+trace stopped at 11:08:29 (1.7 GB, closed cleanly).
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| listens on `127.0.0.1:7979` only, never `0.0.0.0` | `listening.txt`: `127.0.0.1:7979 pid=860 vectorcraft`, and no other port owned by PID 860. The poll agrees (`TCP 127.0.0.1:7979 0.0.0.0:0 LISTENING 860`). Every other listener is Windows' (`svchost`, `lsass`, `wininit`, `services`, `spoolsv`) | as expected |
+| no outbound | no TCP/UDP event from PID 860 in Procmon. The only DNS lookups in the session are Windows' `wpad` and `localhost` | as expected |
+
+Child processes: only the usual `reg.exe query "HKCU\Control Panel\International" /v LocaleName`. Its own log
+doesn't mention the control port. The trace has no `Process Exit` for PID 860, because Procmon stopped 7 s
+after the user pressed Enter. That doesn't affect what was listening. Nothing connected to the port: the probe
+only checks where it listens, not what it accepts (see the plan's known gaps).
+
+## fs-read
+
+**Run.** 2026-10-29 11:11, `logs/fs-read/`, networking off. `vectorcraft "C:\probe\tools\test.svg"`, PID 2204,
+started at 11:12:13. The user closed it without saving at 11:18:06. The trace closed cleanly (2.6 GB).
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| reads `test.svg` | opened, read to end-of-file and closed at 11:12:13.56 (path in the trace: the mapped tools folder, `\Device\vmsmb\…\test.svg`). `ui.json` now lists it in `recent_files` | as expected |
+| its own install/settings files | the install dir, `%APPDATA%\VectorCraft` (`ui.json` via a temp file and rename, `logs\`), the Direct3D shader cache | as expected |
+| no canaries | no process opened a canary file | as expected |
+| no other user files | nothing else under the profile. In the mapped tools folder, the only other access was one failed open of a `Fonts` folder next to the document (a document-local fonts lookup; the folder doesn't exist). It never touched the MSI, `probe.ps1` or Procmon | as expected |
+
+Child processes: the usual `reg.exe` locale query only. No network events. Registry writes only Windows'
+bookkeeping (`bam`).
+
+**Analysis fix.** `trace-tree.py` listed only reads under `C:\`, so it missed reads in mapped host folders
+(`\Device\vmsmb\…`). It now includes them. The five earlier traces were re-checked with it (baseline,
+persist, net-out, self-update, net-listen): VectorCraft read nothing in a mapped host folder in any of them,
+so their results stand.
+
+## fs-write
+
+**Run.** 2026-10-29 11:29, `logs/fs-write/`, networking off. It ran with no clicks. The sandbox then shut itself
+down after `DONE.txt`. Windows Sandbox reported that on the host as "connection to the sandbox was lost", and
+its window then hung until the user ended it. The logs were already complete, but the self-shutdown has been
+taken out again. Three runs of `vectorcraft-cli convert C:\probe\tools\test.svg C:\probe\out\test.<ext>`
+(PIDs 2268, 2508, 3684), all exit 0. The trace closed cleanly (260 MB).
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| writes only `C:\probe\out\test.*` (plus temp files) | each run wrote one temp file in the out folder (`.test.<ext>.<pid>-0.tmp`) and renamed it to `test.<ext>`. Nothing written anywhere else, apart from the console pipe back to the script. `out-files.txt` / `logs/fs-write-out/`: `test.svg` 683 B, `test.pdf` 10,376 B, `test.png` 2,870 B | as expected |
+
+Reads outside the install dir: only `test.svg` in the read-only tools folder. No child processes, no network
+events, no registry writes beyond Windows' handle bookkeeping (`RegSetInfoKey`), and no canary touched. The CLI's
+own output (`cli-output.txt`) is one JSON line per export. The PDF and PNG warn that the drawing's font isn't
+installed, so a fallback font (Source Sans 3) was used.
+
+## agent-text
+
+**Run.** 2026-10-29 11:49, `logs/agent-text/`, networking off, no clicks. `vectorcraft-cli mcp --headless` (PID
+756) got five JSON-RPC messages on stdin (`mcp-requests.jsonl`): initialize, initialized, `tools/list`,
+`prompts/list`, `resources/list`. It answered all four requests (`mcp-responses.jsonl`, 40,709 bytes) and exited
+0 at the end of input, 0.15 s after starting. On stderr there was one line: `MCP server on stdio (headless)`.
+The trace closed cleanly (216 MB).
+
+**What it offers an agent** (summary in `mcp-review.txt`):
+- **Server:** `vectorcraft` 0.17.0. Capabilities are tools, prompts, resources, completions and logging.
+- **Instructions:** one paragraph on coordinates and which tools to use for drawing, inspecting and running
+  menu commands, plus the `vectorcraft://` resource URIs.
+- **32 tools:**
+  - drawing and editing: `draw_shape`, `draw_path`, `set_paint`, `transform`, `pathfinder`, `apply_effect`,
+    `add_text`, `create_graph`, …
+  - inspection: `doc_inspect`, `inspect_document`, `render_preview`, `ui_inspect`, `ui_screenshot`
+  - running any menu command: `command_list`/`list_commands`, `command_run`/`run_command`, `command_batch`,
+    `invoke_menu`
+  - UI driving: `select_tool`, `pointer_gesture`, `press_key`, `type_text`, `open_panel`
+  - files: `open_file`, `save_file`, `export`, `screenshot`
+- **5 prompts:** `poster`, `icon-set`, `recolor`, `trace-and-style`, `export-set`.
+- **3 resources:** `document`, `document-json`, `commands`.
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| descriptions match what the tools do | each describes its effect on the document or app, consistent with its name and parameters | as expected |
+| nothing tells an agent to fetch, run, send or hide anything | a scan of **every** string in the four responses (descriptions, parameter descriptions, prompts, resources, instructions) found no URLs, no hidden or zero-width characters, nothing about credentials, shells or downloads, and nothing addressed to the agent's own rules. The only keyword hit is "Execute any VectorCraft command" in `run_command`, which describes the tool. Read in full: the server instructions and the descriptions of the file and command tools | as expected |
+
+**Process behaviour:** it read only its stdin file and wrote only its stdout and stderr files, both redirected
+by the script into the log folder. No other file access, no network events, no child processes, no canary.
+
+**Note for the report (scope, not instructions).** The agent interface reaches beyond the drawing:
+- `open_file` (`path`) opens any supported file type (images, PDF, AI/EPS, PSD, …) from any path.
+- `save_file`, `export` and `screenshot` (`path`) write to any path the user can write to.
+- `command_run`/`run_command`/`invoke_menu` run any menu command, including those that start other programs
+  (print, reveal; see `exec`).
+
+Nothing confines these to a project folder. In an agent setup, what they can reach is whatever the user's
+account can, gated only by the agent client's own approval prompts. That is ordinary for a desktop app's
+automation interface, but it belongs under Blast Radius. Not probed: `--connect` mode, actually calling tools,
+and the per-id `vectorcraft://` resource reads.

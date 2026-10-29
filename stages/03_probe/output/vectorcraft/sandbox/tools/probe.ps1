@@ -2,9 +2,9 @@
 # Started by the .wsb LogonCommand:  probe.ps1 -Probe <capability>
 # C:\probe\tools  read-only: this script, the MSI, Procmon64.exe, test.svg
 # C:\probe\logs   writable: everything this probe records (copied out to the host by the mapping)
-# C:\probe\out    writable, fs-write probe only
+# C:\probe\out    writable, fs-write and mcp-call-* probes only
 param([Parameter(Mandatory)][ValidateSet('baseline','install','net-out','self-update','net-listen',
-      'fs-read','fs-write','exec','secrets','persist','agent-text')][string]$Probe)
+      'fs-read','fs-write','exec','secrets','persist','agent-text','mcp-call-unscoped','mcp-call-scoped')][string]$Probe)
 
 $ErrorActionPreference = 'Continue'
 $T = 'C:\probe\tools'; $L = 'C:\probe\logs'
@@ -189,6 +189,70 @@ switch ($Probe) {
          -RedirectStandardOutput "$L\mcp-responses.jsonl" -RedirectStandardError "$L\mcp-stderr.txt" -NoNewWindow -PassThru
     if (-not $p.WaitForExit(30000)) { $p.Kill(); Step 'mcp server did not exit on end of input; killed after 30 s' }
     Stop-Watch }
+  { $_ -like 'mcp-call-*' } {   # network off. Call the MCP tools for real; one pass per session:
+                                # mcp-call-unscoped (A), mcp-call-scoped (B, with the automation roots)
+    $pass = $Probe -replace '^mcp-call-', ''
+    # an extra canary only an SVG reader would open, so a refusal can't just be "unsupported file type"
+    $tag = Get-Content "$L\canary-tag.txt"; $docs = [Environment]::GetFolderPath('MyDocuments')
+    $cs = Join-Path $docs 'canary-drawing.svg'; New-Item -ItemType Directory -Force $docs | Out-Null
+    Set-Content $cs "<svg xmlns=`"http://www.w3.org/2000/svg`" width=`"10`" height=`"10`"><title>$tag-svg</title><rect width=`"10`" height=`"10`"/></svg>"
+    Add-Content "$L\canary-paths.txt" $cs
+    $desk = [Environment]::GetFolderPath('Desktop'); New-Item -ItemType Directory -Force $desk | Out-Null
+    Step "extra canary $cs; desktop is $desk"
+    Install-VC
+    New-Item -ItemType File -Force "$L\empty.txt" | Out-Null
+    $hp = Start-Process $CLI -ArgumentList 'mcp --help' -RedirectStandardInput "$L\empty.txt" -RedirectStandardOutput "$L\mcp-help.txt" `
+          -RedirectStandardError "$L\mcp-help-stderr.txt" -NoNewWindow -PassThru
+    if (-not $hp.WaitForExit(15000)) { $hp.Kill(); Step 'mcp --help did not exit; killed after 15 s' }
+    Start-Watch
+    function Run-Pass($name, $argList, $calls) {
+      $lines = @('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}',
+                 '{"jsonrpc":"2.0","method":"notifications/initialized"}')
+      $labels = @(); $id = 1
+      foreach ($c in $calls) {
+        $id++
+        $lines += (@{ jsonrpc = '2.0'; id = $id; method = 'tools/call'; params = @{ name = $c[0]; arguments = $c[1] } } | ConvertTo-Json -Compress -Depth 10)
+        $labels += "$id $($c[0]) $($c[2])"
+      }
+      Set-Content "$L\mcp-requests-$name.jsonl" $lines
+      Set-Content "$L\mcp-labels-$name.txt" $labels
+      Step "pass $name : vectorcraft-cli $argList ($($calls.Count) tool calls)"
+      $p = Start-Process $CLI -ArgumentList $argList -RedirectStandardInput "$L\mcp-requests-$name.jsonl" `
+           -RedirectStandardOutput "$L\mcp-responses-$name.jsonl" -RedirectStandardError "$L\mcp-stderr-$name.txt" -NoNewWindow -PassThru
+      Step "pass $name server pid $($p.Id)"
+      if (-not $p.WaitForExit(60000)) { $p.Kill(); Step "pass $name : server did not exit on end of input; killed after 60 s" }
+      else { Step "pass $name : server exit code $($p.ExitCode)" }
+    }
+    $rect  = @{ shape = 'rectangle'; x = 100; y = 100; width = 200; height = 120 }
+    $paint = @{ fill = '#3366cc'; stroke = '#000000'; strokeWidth = 2 }
+    $common = { param($exp) @(
+      ,@('run_command', @{ command = 'file.new'; params = @{ width = 800; height = 600 } }, 'new document')
+      ,@('draw_shape', $rect, 'rectangle')
+      ,@('set_paint', $paint, 'paint on selection')
+      ,@('doc_inspect', @{}, 'document summary')
+      ,@('render_preview', @{ max_side = 256 }, 'inline png')
+      ,@('export', @{ path = $exp }, 'in-root export')
+      ,@('open_file', @{ path = "$T\test.svg" }, 'in-root open')) }
+    if ($pass -eq 'unscoped') { Run-Pass 'unscoped' 'mcp --headless' ((& $common 'C:\probe\out\a.svg') + @(
+      ,@('export', @{ path = "$desk\control.svg" }, 'CONTROL out-of-root export, unscoped'))) }
+    else { Run-Pass 'scoped' "mcp --headless --automation-read-root $T --automation-write-root C:\probe\out" ((& $common 'C:\probe\out\b.svg') + @(
+      ,@('save_file', @{ path = 'C:\probe\out\b-saved.svg' }, 'in-root save')
+      ,@('screenshot', @{ path = 'C:\probe\out\b.png' }, 'in-root screenshot')
+      ,@('export', @{ path = "$desk\x.svg" }, 'OUT export to Desktop')
+      ,@('save_file', @{ path = "$desk\x.vectorcraft" }, 'OUT save to Desktop')
+      ,@('screenshot', @{ path = "$desk\x.png" }, 'OUT screenshot to Desktop')
+      ,@('open_file', @{ path = $cs }, 'OUT open canary svg')
+      ,@('open_file', @{ path = "$env:USERPROFILE\.ssh\id_rsa" }, 'OUT open canary id_rsa')
+      ,@('open_file', @{ path = 'C:\Windows\win.ini' }, 'OUT open win.ini')
+      ,@('export', @{ path = 'C:\probe\out\..\escape.svg' }, 'OUT traversal export')
+      ,@('open_file', @{ path = "$T\..\..\Windows\win.ini" }, 'OUT traversal open win.ini'))) }
+    Stop-Watch
+    & { "== C:\probe\out"; Get-ChildItem C:\probe\out -Force | ForEach-Object { "$($_.Name) $($_.Length)" }
+        "== C:\probe";     Get-ChildItem C:\probe -Force | ForEach-Object { "$($_.Name) $($_.Length)" }
+        "== $desk";        Get-ChildItem $desk -Force | ForEach-Object { "$($_.Name) $($_.Length)" }
+        '== out-of-root targets (exists?)'
+        foreach ($f in "$desk\control.svg", "$desk\x.svg", "$desk\x.vectorcraft", "$desk\x.png", 'C:\probe\escape.svg') { "$(Test-Path $f) $f" }
+      } | Set-Content "$L\out-files.txt" }
 }
 
 # no self-shutdown: a guest Stop-Computer left the host's Windows Sandbox window hung (fs-write), so a person

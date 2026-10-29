@@ -1,6 +1,6 @@
 ---
 run: vectorcraft
-status: DONE 2026-10-29. All 11 probes run, all Within scope (self-update's update step Not run: never offered); see probe-results.md. Next: 04_report.
+status: 11 probes DONE 2026-10-29 (all Within scope; self-update's update step Not run: never offered). Probe 12 `mcp-call` added 2026-10-29 and approved by the user as written (additions included) the same day; at the user's request its two passes then became two probes, each in its own sandbox session: `mcp-call-unscoped` and `mcp-call-scoped`. Both DONE 2026-10-29, Within scope; see probe-results.md.
 backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28), one session per probe
 ---
 
@@ -14,7 +14,7 @@ backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28),
 - **Mapped folders:**
   - `C:\probe\tools`, read-only: `probe.ps1`, the MSI and `test.svg`, plus `Procmon64.exe` once approved.
   - `C:\probe\logs`, writable: that probe's own log folder only.
-  - `fs-write` also gets `C:\probe\out`, its one writable target.
+  - `fs-write` and both `mcp-call-*` probes also get `C:\probe\out`, their one writable target (host side `logs/<probe>-out/`).
   - Nothing else from the host is visible, and no personal folders are mapped.
 - **The script** (`sandbox/tools/probe.ps1`) does the same for every probe:
   1. Checks that the MSI's SHA-256 is still `861f4e9f…5d11c1`. On a mismatch it stops.
@@ -47,6 +47,53 @@ backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28),
 | 9 | `exec` | nothing extra | print to "Microsoft Print to PDF", printer/page setup, Reveal in folder | only `powershell` (printer list / print verb), `rundll32 printui.dll`, `explorer`, maybe `reg.exe query` | no | 3 short tasks |
 | 10 | `secrets` | canaries present | normal use 2 min: shapes, menus, open/save dialogs (cancelled) | no canary file opened, `CANARY_TOKEN` never written or sent | no | 2 min of use |
 | 11 | `agent-text` | none | `vectorcraft-cli mcp --headless`; ask it for its tool, prompt and resource lists | descriptions match what the tools do; nothing tells an agent to fetch, run, send or hide anything. I review the text on the host as **data** | no | none |
+| 12 | `mcp-call-unscoped`, `mcp-call-scoped` | write `C:\probe\out`; tools folder read-only | call MCP tools for real: unscoped in one session, scoped with the root options in another (detail below) | unscoped: every call does what its description says and writes only where told; scoped: in-root calls work, **every** out-of-root call is refused with nothing read or written outside the roots | no | none |
+
+### Probe 12 `mcp-call` in detail (added 2026-10-29, after the other 11 had run)
+**Why:** `agent-text` only listed the tools. The report's MCP advice rests on `--automation-read-root` /
+`--automation-write-root`, which nothing has tested.
+
+**Grant:** networking off; `C:\probe\tools` read-only (as every probe); `C:\probe\logs` writable; `C:\probe\out`
+writable, mapped like `fs-write` (host `logs/mcp-call-<pass>-out/`). Canaries as every probe, plus one extra canary
+for this probe only: `Documents\canary-drawing.svg`, a valid SVG carrying the tag, so an `open_file` of it can't
+be refused merely as an unsupported file type.
+
+**Task** (no clicks; JSON-RPC over stdin from a file, as `agent-text`; each pass is its own probe in its own
+fresh sandbox session and log folder, so pass B starts from a clean machine; each server starts with
+`initialize`/`initialized`; `vectorcraft-cli mcp --help` is saved first to record the flags):
+- **Pass A, `mcp-call-unscoped`:** `vectorcraft-cli mcp --headless`
+  1. `run_command` `file.new` (800×600)
+  2. `draw_shape` rectangle, then `set_paint` fill/stroke on it
+  3. `doc_inspect`, `render_preview` (`max_side` 256)
+  4. `export` → `C:\probe\out\a.svg`
+  5. `open_file` `C:\probe\tools\test.svg`
+  6. *control (my addition):* `export` → `%USERPROFILE%\Desktop\control.svg`, to show what "unscoped" means in
+     practice, so a refusal in pass B is the root option at work and not the tool failing anyway.
+- **Pass B, `mcp-call-scoped`:** `vectorcraft-cli mcp --headless --automation-read-root C:\probe\tools --automation-write-root C:\probe\out`
+  1. the in-root calls again: `file.new`, `draw_shape`, `set_paint`, `doc_inspect`, `render_preview`, `export` →
+     `C:\probe\out\b.svg`, `open_file` `C:\probe\tools\test.svg`; plus `save_file` → `C:\probe\out\b-saved.svg`
+     and `screenshot` → `C:\probe\out\b.png`, so every write tool also has an in-root success to compare with
+  2. out-of-root writes: `export` → `%USERPROFILE%\Desktop\x.svg`, `save_file` → `…\Desktop\x.vectorcraft`,
+     `screenshot` → `…\Desktop\x.png`
+  3. out-of-root reads: `open_file` of `Documents\canary-drawing.svg`, of `.ssh\id_rsa`, and of `C:\Windows\win.ini`
+  4. *traversal (my addition):* `export` → `C:\probe\out\..\escape.svg` and `open_file`
+     `C:\probe\tools\..\..\Windows\win.ini`, which start inside a root but resolve outside it
+- **Not called:** print, reveal, `press_key`, `type_text`, `ui_*`, `invoke_menu`, `pointer_gesture`, or any
+  `run_command` other than `file.new`.
+- After its pass the script lists the Desktop, `C:\probe` and `C:\probe\out`, and checks whether each
+  out-of-root target exists.
+
+**Expected footprint (written before running):**
+- Pass A: each call's result matches its description (an id from `draw_shape`, a document summary, an inline
+  PNG, a written file). Writes only `C:\probe\out\a.svg` (temp file + rename, as in `fs-write`) and the control
+  file on the Desktop; reads `test.svg` and its own install files. No canary, no network, no child process.
+- Pass B: in-root calls succeed as in A (`b.svg`, `b-saved.svg`, `b.png` in the out folder). **Every** out-of-root
+  call, traversal included, returns an error naming the root restriction, and the trace shows **no** create,
+  write or read of the Desktop targets, `C:\probe\escape.svg`, the canaries or `win.ini` by the scoped server.
+  A refusal that comes only after the file was opened (e.g. "unsupported format" with the file read first)
+  counts as **not** blocked.
+- Verdict rule: any out-of-root file opened or written in pass B → **OUT OF SCOPE** (the scoping fails), with
+  the exact path.
 
 Probes 1, 2 and 3 each include the MSI install; the other probes install it before observing, so their
 trace shows only the probe's own task.
@@ -64,6 +111,8 @@ trace shows only the probe's own task.
 - The MCP server is probed headless. The `--connect` mode is covered by `net-listen` only as a port.
 
 ## What needs your yes before anything runs
+0. **Probe 12 `mcp-call`** (added after the others ran): the task above, including my two additions (the
+   unscoped Desktop control in pass A and the two traversal attempts in pass B). Networking stays off.
 1. **This plan**, all 11 probes.
 2. **Probes 4 and 5 reach the real internet** from inside the sandbox. Probe 5 downloads the newest
    VectorCraft release.

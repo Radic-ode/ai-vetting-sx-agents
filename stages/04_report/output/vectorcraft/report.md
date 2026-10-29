@@ -7,12 +7,12 @@
 
 ## Risk Tier: MEDIUM
 
-VectorCraft 0.17.0 behaved like a well-behaved desktop editor in all 11 sandbox probes. It touched no
+VectorCraft 0.17.0 behaved like a well-behaved desktop editor in all 13 sandbox probes. It touched no
 canary credentials, set nothing to start on its own, made no network contact at all, kept its control port on
 loopback, and started only the helper programs it documents. It stays at Medium for two reasons:
 - it is large, fast-moving code that was spot-checked, not read, and the exact 0.17.0 commit was not reviewed;
 - it can start PowerShell and write wherever it is pointed, and its MCP interface hands that reach to an agent
-  unless it is scoped.
+  unless it is scoped. Scoping is off by default. When it is on, it confined the file tools in the probes.
 
 ## Scorecard
 
@@ -21,7 +21,7 @@ loopback, and started only the helper programs it documents. It stays at Medium 
 | Provenance & Maintainer Trust | Pass | Official org repo. Both source zips are byte-identical to repo commits. The MSI was built by the repo's CI, its hash matches the release's `SHA256SUMS.txt`, and it is Authenticode-signed by a Microsoft-verified identity (Learning Machines Inc), re-verified after the probes. Minor LLC/Inc naming mismatch. |
 | Permission Scope vs. Need | Pass | Observed use fits an editor: the files the user opens and saves, its own settings and logs, printer helpers, and a locale lookup. 0.17.0 has **no network client**: no connection in three online launches, and no updater or HTTP/TLS code in the shipped binaries. The control port is opt-in and bound to `127.0.0.1`. *(Up from Partial: the network use scored statically belongs to newer code.)* |
 | Auditability | Partial | Open source, readable, no obfuscation. But it is large (606k lines changed in 20 days), was reviewed by pattern and not read, 32 dependencies come from the publisher's own unreviewed forks, and the `v0.17.0` commit itself sits between the two reviewed commits. The probes and a byte search of the shipped binaries cover part of that gap. |
-| Blast Radius | Partial | It writes wherever the user (or an agent) saves, and starts fixed PowerShell scripts (printer list, printing), `rundll32 printui.dll` and `explorer`, all observed and all documented. It doesn't run arbitrary code, reach the network, persist or touch credentials. But its MCP file tools take **any path** by default, and the control port lets any local process drive the app while it is on. |
+| Blast Radius | Partial | It writes wherever the user (or an agent) saves, and starts fixed PowerShell scripts (printer list, printing), `rundll32 printui.dll` and `explorer`, all observed and all documented. It doesn't run arbitrary code, reach the network, persist or touch credentials. But its MCP file tools take **any path** by default (shown: an unscoped `export` wrote to the Desktop), and the control port lets any local process drive the app while it is on. With `--automation-read-root` / `--automation-write-root`, `open_file`, `export`, `save_file` and `screenshot` refused every out-of-root path, `..` included, and read or wrote nothing outside. Whether the roots also confine file commands run through `run_command` is untested, so it stays Partial. |
 | Change Control | Pass | 0.17.0 doesn't update itself: no update check in three online launches, and no updater code in the binary. A new version arrives only when the user installs a new MSI, which comes with release notes, checksums and a signature. **Newer versions add a startup update check** (prompted, hash- and signature-checked, per the source); re-assess on upgrade. *(Up from Partial.)* |
 
 ## Capability Probes
@@ -42,6 +42,8 @@ a once-a-second connection and process poll. Details in `03_probe/output/vectorc
 | exec | nothing extra | print, printer setup, reveal in folder | Windows Sandbox | Within scope: only `powershell` (printer list, print script), `rundll32 printui.dll`, `explorer /select`, `reg.exe query` (and Windows' fax console after a mis-click on the Fax printer) |
 | secrets | canaries present | 2½ min of normal use incl. Open/Save dialogs | Windows Sandbox | Within scope: no canary file opened, `CANARY_TOKEN` never written or sent |
 | agent-text | none | `vectorcraft-cli mcp --headless`: list tools, prompts, resources | Windows Sandbox | Within scope: 32 tools, 5 prompts, 3 resources. Text accurate, nothing addressed to the agent's own rules, no URLs or hidden characters |
+| mcp-call-unscoped | write `C:\probe\out` | MCP calls: new document, draw, paint, inspect, preview, export, open; plus an export to the Desktop | Windows Sandbox | Within scope: every result as its tool describes; writes only the requested files. The Desktop export succeeded: **unscoped, any path** |
+| mcp-call-scoped | write `C:\probe\out`, read the tools folder | same calls with `--automation-read-root` / `--automation-write-root`, then 9 out-of-root writes and reads (Desktop, two canaries, `win.ini`, two `..` traversals) | Windows Sandbox | Within scope: in-root calls work; **all 9 out-of-root calls refused**, same message whether the file exists or not; no out-of-root content read or written (attribute-only handles for path resolution) |
 
 **Binary check (host, read-only, after the probes).** The MSI was unpacked as data with 7-Zip. `vectorcraft.exe`
 and `vectorcraft-cli.exe` match the hashes the sandbox recorded. Neither contains:
@@ -67,10 +69,13 @@ in the static review is newer than this release.
   - hardware GPU paths (the sandbox has no GPU and used the software renderer).
 - **The print script was seen only in part.** Procmon kept its first 4,070 characters. Its behaviour was
   observed for the Fax and Print-to-PDF paths only.
-- **MCP coverage is limited:**
-  - its tools were listed, not called;
-  - `--connect` mode and the per-id `vectorcraft://` resources were not probed;
-  - the `--automation-read-root` / `--automation-write-root` scoping options were not tested.
+- **MCP coverage is partial:**
+  - called: drawing, inspection, preview and the four file tools, unscoped and scoped. Not called: print,
+    reveal, keyboard, `ui_*` and most other tools;
+  - the root options were tested on `open_file`, `export`, `save_file` and `screenshot` only. **Not tested:** file
+    commands reached through `run_command` / `command_batch` / `invoke_menu`, `vectorcraft://` resource reads,
+    and links (symlinks or junctions) inside a root that point outside it;
+  - `--connect` mode was not probed, with or without the root options.
 - **The control port was only checked for where it listens,** not for what it accepts from a local process.
 - **No real reboot.** The Windows 10 sandbox can't restart, so `persist` shows nothing is *set up* to start
   again, not what happens across a restart.
@@ -94,9 +99,13 @@ The user already has 0.17.0 installed, from the same MSI that was probed. Nothin
    - ideally re-run the `net-out` and `self-update` probes against it (`make-wsb.ps1 -Redo net-out`, with the
      new MSI and hash in `probe.ps1`).
 2. **Scope the MCP server before giving it to an agent:** `vectorcraft-cli mcp --automation-read-root <project>
-   --automation-write-root <project>`. Unscoped, its file tools can read and write any path your account can,
-   and `run_command` can trigger printing and Explorer. These options weren't tested in the probes, so confirm
-   they block a path outside the root before relying on them.
+   --automation-write-root <project>`. Unscoped (the default), its file tools read and write any path your
+   account can, and `run_command` can trigger printing and Explorer. With the roots set, the probes showed the
+   file tools refusing every path outside them, `..` tricks included. The server confirms on stderr:
+   `files confined: read …; write …`. Two limits remain:
+   - it was not shown that the roots also bind file commands run through `run_command`, so keep the agent
+     client's approval prompt on for `run_command`, `command_batch` and `invoke_menu`;
+   - don't point a root at a folder that holds links to elsewhere.
 3. **Use the control port only when needed.** Start `--control` only while an agent drives the app, and close
    the app afterwards. Any local program can use the port while it's open.
 4. *(Optional)* Delete the all-users desktop shortcut (`C:\Users\Public\Desktop\VectorCraft.lnk`) if you don't
@@ -105,7 +114,8 @@ The user already has 0.17.0 installed, from the same MSI that was probed. Nothin
 **What would move it to Low:**
 - Auditability: review the `v0.17.0` tag commit and the forked dependencies, or rebuild the MSI from that tag
   and match the binaries.
-- Blast Radius: probe the MCP server with the root options set and show it can't reach outside them.
+- Blast Radius: the root options now confine the four file tools. What's left is to show they also confine
+  file commands reached through `run_command` / `command_batch` / `invoke_menu` and links out of a root.
 
 ---
 *Generated using the ai-vetting-skill-sx skill. Static analysis plus the capability probes listed — see

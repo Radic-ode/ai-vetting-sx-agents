@@ -19,6 +19,8 @@ backend: Windows Sandbox, one fresh session per probe (see probe-plan.md)
 | exec | Within scope (2026-10-29): only the expected PowerShell, `rundll32 printui.dll`, `explorer` (+ `reg`) |
 | secrets | Within scope (2026-10-29): no canary opened, token not written or sent |
 | agent-text | Within scope (2026-10-29): text accurate, no instructions to the agent; file tools take any path |
+| mcp-call-unscoped | Within scope (2026-10-29): 8 calls, each result as described; the Desktop control export was written (unscoped = any path) |
+| mcp-call-scoped | Within scope (2026-10-29): in-root calls work; **all 9 out-of-root calls refused**, traversal included; no out-of-root file read or written (only metadata handles for path resolution) |
 
 ## baseline
 
@@ -370,23 +372,92 @@ anything inside. The other reads in user folders are folder listings, `desktop.i
 and thumbnail caches, all from the Open and Save As dialogs. Child processes: the usual `reg.exe` locale query
 only.
 
+## mcp-call (two probes: `mcp-call-unscoped`, `mcp-call-scoped`)
+
+Added after the other 11 and approved by the user the same day. It was planned as two passes in one session.
+At the user's request it ran as two probes, each in its own fresh sandbox, so the scoped run started clean.
+
+**Run.** 2026-10-29, networking off, no clicks, `logs/mcp-call-unscoped/` (13:17) and `logs/mcp-call-scoped/`
+(13:19). Each installed the MSI (hash checked), planted the usual canaries plus `Documents\canary-drawing.svg`
+(a valid SVG carrying the tag), then fed one `vectorcraft-cli mcp --headless` process its JSON-RPC requests from
+a file (`mcp-requests-<pass>.jsonl`, call labels in `mcp-labels-<pass>.txt`). Unscoped server PID 2276, scoped
+PID 1808. Both answered every request (`mcp-responses-<pass>.jsonl`) within about a second and exited at end of
+input. The exit code was not captured: `Start-Process -PassThru` returned none (script quirk; the full set of
+responses shows the run completed). `mcp --help` is not a valid option (`unknown mcp option --help`), so the
+flags are recorded only by the scoped server's own stderr line:
+`files confined: read C:\probe\tools\; write C:\probe\out\`. Both traces closed cleanly (224 and 244 MB).
+Analysis: `trace-tree.py` → `analysis-tree.txt` in each folder, plus a per-path listing of every event the
+server had on each out-of-root target.
+
+**Per call: did the result match the description?** (both passes unless noted)
+
+| id | Call | Result | Matches |
+|---|---|---|---|
+| 2 | `run_command` `file.new` 800×600 | `{index: 1}`, new document | yes |
+| 3 | `draw_shape` rectangle 100,100 200×120 | `{id: 2, shape: rectangle}` | yes |
+| 4 | `set_paint` fill/stroke/2 pt | `applied` echoes the three values | yes |
+| 5 | `doc_inspect` | artboard 800×600, the rectangle at the given bounds, history Rectangle / Fill Color / Stroke | yes |
+| 6 | `render_preview` `max_side` 256 | inline PNG 256×192 (800×600 scaled), document unchanged | yes |
+| 7 | `export` → `C:\probe\out\a.svg` / `b.svg` | 377 B; the file is the blue rectangle on an 800×600 artboard; `a.svg` and `b.svg` byte-identical | yes |
+| 8 | `open_file` `C:\probe\tools\test.svg` | opened as document 2, no warnings | yes |
+| 9 (A) | **control** `export` → `Desktop\control.svg` | written, 683 B | yes. Unscoped, any path is writable |
+| 9 (B) | `save_file` → `C:\probe\out\b-saved.svg` | 683 B, with a warning that SVG doesn't keep every VectorCraft feature; byte-identical to `fs-write`'s `test.svg` | yes |
+| 10 (B) | `screenshot` → `C:\probe\out\b.png` | inline PNG 200×120 (`test.svg`'s artboard) and the same file written | yes |
+| 11–13 (B) | `export` / `save_file` / `screenshot` → `Desktop\x.svg` / `.vectorcraft` / `.png` | `isError: true`, `<tool>: automation path rejected: outside the write root C:\probe\out\: <path>` | refused |
+| 14–16 (B) | `open_file` of `Documents\canary-drawing.svg`, `.ssh\id_rsa`, `C:\Windows\win.ini` | `isError: true`, `… outside the read root C:\probe\tools\: <path>` | refused |
+| 17 (B) | `export` → `C:\probe\out\..\escape.svg` | refused, and the message names the **resolved** path `C:\probe\escape.svg` | refused |
+| 18 (B) | `open_file` `C:\probe\tools\..\..\Windows\win.ini` | refused, resolved to `C:\Windows\win.ini` | refused |
+
+The refusal text is the same whether the target exists (canaries, `win.ini`) or not (Desktop `x.*`,
+`escape.svg`). So a refusal tells an agent nothing about which files exist.
+
+**Expected against observed**
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| A: results match descriptions; writes only `C:\probe\out\a.svg` (temp + rename) and the Desktop control; reads `test.svg` and its own install files; no canary, network or child process | exactly that: `.a.svg.2276-0.tmp` → `a.svg` in the out folder, `.control.svg.2276-1.tmp` → `control.svg` on the Desktop. It also read its request file and `test.svg`, and wrote its response and stderr files (the script's redirects). No canary event, no network event, no process created, registry writes only Windows' `RegSetInfoKey` bookkeeping | as expected |
+| B: in-root calls succeed (`b.svg`, `b-saved.svg`, `b.png`) | all three written in the out folder by temp + rename; `out-files.txt` lists only those | as expected |
+| B: every out-of-root call refused with an error naming the root restriction | all 9 refused, traversal included, each naming the root and the resolved path | as expected |
+| B: no create, write or read of the Desktop targets, `C:\probe\escape.svg`, the canaries or `win.ini` | **no write and no read of content.** Before each refusal the server opened the target with `Desired Access: Read Attributes, Synchronize` only, asked for its normalised name, and closed the handle (for a target that doesn't exist: `NAME NOT FOUND`, then the same on its parent folder). This is the path being resolved (`..`, links) before it is compared with the root. No `ReadFile` on any of them (0 in the trace), no handle with read-data or write access, none of the targets exists afterwards (`out-files.txt`), and the canary tag appears in no response or output file. Two of those metadata handles were on canaries (`canary-drawing.svg`, `id_rsa` at 13:19:39.85), and `trace-tree.py` lists them as canary hits for that reason | as expected (see note) |
+
+**Note on the verdict rule.** The plan counts an out-of-root file as **not** blocked if it is "opened or
+written". Here the canaries and `win.ini` were opened only for their attributes and resolved name, never for
+their content. I count that as blocked: an attribute-only handle can't read the file. And the server's reply
+was the same as for a path that doesn't exist, so even the file's existence didn't reach the agent. This is
+my judgement on the rule's wording. Read strictly, the rule would flag it, so it is named here.
+
+**What the scoping covers, and what it doesn't (not tested here):**
+- Tested: `open_file`, `export`, `save_file` and `screenshot` with `path`, including `..` traversal.
+- Not tested: the same file operations reached **through `run_command` / `command_batch` / `invoke_menu`**
+  (e.g. a save, export or open command by id), and `vectorcraft://` resource reads. If the root check sits in
+  the four tools and not in the engine commands underneath, those would bypass it.
+- Not tested: links (symlinks or junctions) inside a root that point outside it. Resolving the path before the
+  check, as seen above, is the usual way to defeat these.
+- Not tested: `--connect` mode with the root options.
+- Unscoped is the default, and the control export shows it reaches any path the account can write.
+
 ## Outside the method (noted, not a probe)
 The user installed and launched the app on their own machine on 2026-10-28, against this run's
 then-pending report. It started normally. Nothing was monitored, so this is not evidence of what it
 did or did not do.
 
 ## Summary for 04_report
-- **All 11 probes ran.** 10 are **Within scope**. `self-update` is also Within scope, but its update step is
+- **All 11 planned probes ran** (plus `mcp-call`, below). 10 are **Within scope**. `self-update` is also Within scope, but its update step is
   **Not run: update never offered**.
 - **No OUT OF SCOPE line.** No canary was opened in any probe. Nothing was set to start on its own. There was
   no network contact at all, even online. The control port is loopback-only. Writes went only to the granted
   folder, the app's own settings and logs, and the paths the user chose.
+- **`mcp-call` (added later, two probes, both Within scope):** the MCP tools did what they describe. With
+  `--automation-read-root` / `--automation-write-root` set, all 9 out-of-root calls to the four file tools were
+  refused, `..` traversal included, with no out-of-root content read or written.
 - **Unobserved:** the update download, replacement and signature check (three online launches, no update
-  check). The rest of the print script past 4,070 characters (only its behaviour was observed). Calling MCP
-  tools, `--connect` mode, a real reboot.
-- **For Blast Radius:** the MCP file tools (`open_file`, `save_file`, `export`, `screenshot`) take any path, and
-  `run_command` reaches every menu command, including print and reveal. The installer adds an all-users
-  desktop shortcut.
+  check). The rest of the print script past 4,070 characters (only its behaviour was observed). `--connect`
+  mode, a real reboot. Under scoping: file commands reached through `run_command` / `command_batch` /
+  `invoke_menu`, `vectorcraft://` resource reads, and links that point out of a root.
+- **For Blast Radius:** by default the MCP file tools (`open_file`, `save_file`, `export`, `screenshot`) take any
+  path (shown in `mcp-call-unscoped`), and `run_command` reaches every menu command, including print and reveal.
+  The root options confine those four tools (shown in `mcp-call-scoped`). Whether they also confine
+  `run_command` is untested. The installer adds an all-users desktop shortcut.
 - **Method notes:**
   - Procmon `System` events were dropped until `self-update`. Network results before that also rest on the
     poll and loaded libraries.

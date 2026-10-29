@@ -10,7 +10,8 @@ $wsb   = Join-Path $here 'wsb'
 New-Item -ItemType Directory -Force $wsb | Out-Null
 
 $networked = 'net-out', 'self-update'
-$probes = 'baseline','install','persist','net-out','self-update','net-listen','fs-read','fs-write','exec','secrets','agent-text'
+$probes = 'baseline','install','persist','net-out','self-update','net-listen','fs-read','fs-write','exec','secrets','agent-text','mcp-call-unscoped','mcp-call-scoped'
+$withOut = 'fs-write', 'mcp-call-unscoped', 'mcp-call-scoped'   # these also get C:\probe\out, from ..\logs\<probe>-out
 
 foreach ($p in $probes) {
   $log = Join-Path $logs $p
@@ -20,8 +21,8 @@ foreach ($p in $probes) {
     if (Test-Path $log) { Remove-Item -Recurse -Force $log }
     New-Item -ItemType Directory -Force $log | Out-Null }
   $out = ''
-  if ($p -eq 'fs-write') {   # the grant: one writable folder, kept apart from the log folder
-    $o = Join-Path $logs 'fs-write-out'
+  if ($p -in $withOut) {   # the grant: one writable folder, kept apart from the log folder
+    $o = Join-Path $logs "$p-out"
     if (-not $keep) {
       if (Test-Path $o) { Remove-Item -Recurse -Force $o }
       New-Item -ItemType Directory -Force $o | Out-Null }

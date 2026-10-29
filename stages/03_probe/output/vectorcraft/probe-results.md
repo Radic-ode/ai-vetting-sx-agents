@@ -12,7 +12,7 @@ backend: Windows Sandbox, one fresh session per probe (see probe-plan.md)
 | install | Within scope (2026-10-29), with one note |
 | persist | Within scope (2026-10-29) |
 | net-out | Within scope (2026-10-29): **no connection at all**, where an update check was expected |
-| self-update | Not run yet |
+| self-update | Within scope (2026-10-29), but **the update path was never triggered**: no check, no prompt, no download |
 | net-listen | Not run yet |
 | fs-read | Not run yet |
 | fs-write | Not run yet |
@@ -157,3 +157,44 @@ delayed, conditional, or only run from a menu. `self-update` runs it as 0.1.0 an
 - `dns-cache.txt` was never written: `Get-DnsClientCache` silently returned nothing. An `ipconfig /displaydns`
   taken by hand 6 minutes later had expired. The script now turns on the Windows DNS-client event log, which
   records each lookup with the PID that made it, and saves it as `dns-client-events.txt`.
+
+## self-update
+
+**Run.** 2026-10-29 10:44, `logs/self-update/`, **networking on**, `System` no longer dropped, DNS-client event
+log on. Two launches with `VECTORCRAFT_PRETEND_VERSION=0.1.0`, confirmed in both processes' start-up
+environment in the trace:
+- PID 952, 10:44:47 to 10:51:59, about 7 minutes.
+- PID 5036, 10:52:04 to 10:56:02, about 4 minutes.
+
+Both exited normally (status 0). The user saw **no update prompt either time**. The trace closed cleanly
+(3.0 GB).
+
+**Observed: no update check, so nothing to approve, download or install.**
+- **DNS-client log** (`dns-client-events.txt`, the whole session): no lookup of any GitHub, VectorCraft,
+  ArtCraft (`getartcraft.com`) or Discord name, by any process. Every name looked up is Microsoft's: Windows
+  Update, certificate revocation, SmartScreen, and the MSN news-and-weather taskbar panel, which the user
+  opened by accident at about 10:53.
+- **Procmon:** no TCP or UDP event from either VectorCraft process, and neither loaded `mswsock.dll`,
+  `dnsapi.dll` or `winhttp.dll`.
+- **Backup poll:** neither PID ever owns a connection. Other processes do throughout, so the sandbox was
+  online.
+- **Its own log:** both files (`vectorcraft.1.log`, `vectorcraft.log`) have only the 7 graphics lines.
+- **After:** `vectorcraft --version` is `0.17.0`. Both exes are validly signed by Learning Machines Inc
+  (`signature-after.txt`). The snapshot diff shows no change except the app's own settings and logs, and no
+  Run key, task, service or uninstall change.
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| Later: no download | no prompt, no download | as expected (trivially) |
+| Update: downloads only from `github.com/storytold`, replaces the install, restarts, still validly signed | **not exercised**: no prompt appeared | **Not run: update never offered** |
+
+**What this means for the report.** In three online launches (net-out, and self-update twice as 0.1.0),
+VectorCraft 0.17.0 never contacted its update server. The update code the static review found (`craft-update`,
+startup prompt, SHA-256 and signature checks) exists in the source but did not run at startup here. The
+download, the replacement of the install, and the signature check on a downloaded build remain **unobserved**.
+A check from a menu, if VectorCraft has one, was not tried; it isn't in the approved plan.
+
+**Environment note, not VectorCraft's doing:** while the sandbox was online, the host's USB-tethered connection
+(`Ethernet 4`, Remote NDIS) dropped and stayed down until the user reconnected it, twice. The host's System log
+shows Hyper-V reinitialising its virtual switches (Default Switch, WSL) at 10:46:55. The sandbox stayed online
+apart from those drops: the DNS log shows Windows' own lookups succeeding throughout both launches.

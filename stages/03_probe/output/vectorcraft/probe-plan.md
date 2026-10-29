@@ -1,6 +1,6 @@
 ---
 run: vectorcraft
-status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). Done 2026-10-29: baseline, install, persist, net-out (all Within scope, see probe-results.md). Script since: DNS-client event log, System no longer dropped. Next: self-update (internet, ~100 MB).
+status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). Done 2026-10-29: baseline, install, persist, net-out, self-update (all Within scope; self-update's update path never triggered, see probe-results.md). Next: net-listen.
 backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28), one session per probe
 ---
 

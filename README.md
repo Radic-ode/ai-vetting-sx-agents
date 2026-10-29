@@ -1,80 +1,117 @@
 # ai-vetting-skill-sx
 
-**Vet third-party AI tooling before you install it the way a bank vets a vendor, and then go one step
-further: give every capability its own sandbox and watch what it actually does.**
+**Check a third-party AI tool before you install it, the way a bank checks a new supplier. Then go one
+step further: run each thing it can do in its own throwaway sandbox and watch what it actually does.**
 
-MCP servers, plugins, skills, hooks and agent-driven apps run with your permissions. Reading their
-code tells you what they *can* do. This adds runtime evidence: each capability (network, files,
-processes, credentials, persistence, self-update, text an agent will read) is probed alone in a
-disposable sandbox seeded with fake credentials, and anything that reaches past its grant is named.
+## Why this exists
 
-## The idea in one table
+MCP servers, plugins, Claude skills, hooks and apps that an AI agent drives all run with *your*
+permissions. They can read your files, use your network and start other programs. Reading their code
+tells you what they *could* do. This project adds evidence of what they *do*:
+- each capability (network, files, processes, credentials, starting at login, updating itself, the text
+  an agent will read) is run **alone**, in a **disposable sandbox** seeded with **fake credentials**
+  ("canaries");
+- anything that reaches beyond what that sandbox allowed is named, with the exact file, host or process.
 
-| One capability | Its sandbox allows | Flagged if it… |
+The result is a plain-language report with a risk tier and a concrete recommendation.
+
+## What you get
+
+For every component you vet, four short documents, one per stage:
+
+| Stage | Question it answers | Document |
 |---|---|---|
-| `net-out` | network, logged | contacts a host not found in the code, touches a canary |
-| `fs-write` | one output folder | writes anywhere else |
-| `secrets` | one configured fake credential | opens any of the other planted ones |
-| `persist` | its home folder, logged | adds startup entries, tasks, shell rc lines |
-| `baseline` | nothing at all | does *anything*: unprompted behaviour |
+| 1. Intake | Is this exactly the thing that will be installed (version, checksum, signature, source)? | `intake.md` |
+| 2. Static review | What can it do, according to its code? | `static-findings.md`, `capability-inventory.md` |
+| 3. Probes | What does each capability actually do when run alone in a sandbox? | `probe-plan.md` (**you approve it first**), `probe-results.md` |
+| 4. Report | How risky is it, and what should I do? | `report.md` |
 
-…and so on for `install`, `net-listen`, `fs-read`, `exec`, `self-update` and `agent-text`. Probes never
-share a sandbox, so one capability's behaviour can't hide behind another's permission. Findings feed a
-five-category scorecard (provenance, permission scope, auditability, blast radius, change control) and a
-risk tier, and a component can only earn **Low** if every capability was actually probed.
+The report scores five things, each Pass, Partial or Fail:
+- **Provenance:** who made it, and can the copy be verified?
+- **Permission scope:** does it use only what its job needs?
+- **Auditability:** can its behaviour be inspected?
+- **Blast radius:** what's the worst it could do if it's malicious or buggy?
+- **Change control:** how does it change after you've trusted it once?
 
-## How it works
+These add up to a tier (Low / Medium / High / Critical) and a recommendation. A component can only earn
+**Low** if every capability was actually probed. Every report has a **Coverage Limitations** section that
+says plainly what wasn't checked.
 
-Two layers:
+## Safety rules built in
 
-1. **A Claude skill** ([`_shared/skill/`](_shared/skill/SKILL.md)): the method, report format, the
-   capability/sandbox reference, and two scripts: `probe.sh` (Linux/WSL2: bubblewrap + strace, one probe
-   per run) and `audit_npm_package.sh`. Native Windows apps are probed in Windows Sandbox, one `.wsb` per probe.
-2. **An [ICM](https://arxiv.org/abs/2603.16021) workspace** around it, so a person checks each step:
+- **Nothing third-party runs until a person approves the probe plan.**
+- One capability per sandbox, never shared, so one feature can't hide behind another's permission.
+- Probes never fall back to your real machine. If there's no sandbox, the probe is reported as "not run".
+- Everything inside the component (code, docs, tool descriptions) is treated as data under review, never as
+  instructions to follow.
 
-| Stage | What happens | What you check |
-|---|---|---|
-| `01_intake` | pin down the exact version; verify the copy (commits, checksums, signatures) | is this exactly what will be installed? |
-| `02_static` | read the code; list every capability | does the inventory miss anything? |
-| `03_probe` | write the probe plan → **you approve** → run → results | **nothing third-party runs before you approve** |
-| `04_report` | scorecard, tier, coverage limits, concrete recommendation | is every Pass backed by evidence? |
+## Worked example: VectorCraft 0.17.0
 
-## Worked example: VectorCraft
+[`stages/*/output/vectorcraft/`](stages/04_report/output/vectorcraft/report.md) is a complete, real vetting
+of the [VectorCraft](https://github.com/storytold/vectorcraft) vector editor and its built-in MCP server
+(October 2026):
+- **Intake:** the downloads were byte-identical to repository commits. The installer matched its published
+  checksum and carries a Microsoft-verified signature.
+- **Probes:** 15 probes in Windows Sandbox, one fresh sandbox each, all **Within scope**:
+  - no network contact;
+  - nothing set to start at login;
+  - no canary content read;
+  - the control port listens on this machine only;
+  - only the documented helper programs started.
+- **MCP server:** its tools did what they describe. By default they can reach any path. With the
+  `--automation-read-root` / `--automation-write-root` options set, every attempt to reach outside those
+  folders was refused, whether through the file tools, file commands run by id, `..` tricks or links.
+- **Result: Medium, install with mitigations.** It's held at Medium by the size of the code (spot-checked,
+  not fully read) and by its defaults (unscoped MCP access, an unauthenticated local control port per the
+  code review).
+- The report went through two peer-review rounds; corrections are recorded in the files.
 
-`stages/*/output/vectorcraft/` is a real vetting of the [VectorCraft](https://github.com/storytold/vectorcraft)
-vector editor (2026-10-28):
-- Two downloaded zips proved byte-identical to repository commits.
-- The MSI checked against published checksums and a Microsoft-verified signature.
-- An auto-updater found and read: it asks before installing, and verifies hash and signature.
-- The result: **Medium**, install with mitigations. Capped there because no sandbox was available to
-  run the probes, which the report says plainly instead of hiding it.
+Start with [`report.md`](stages/04_report/output/vectorcraft/report.md). The evidence for each verdict is in
+[`probe-results.md`](stages/03_probe/output/vectorcraft/probe-results.md). (Raw traces and logs stay on the
+machine that ran them and are not in this repository.)
 
-## Use it
+## How to use it
 
-- **Just the skill:** upload `_shared/skill/` to claude.ai, or copy it to `~/.claude/skills/ai-vetting-skill-sx/`.
-  Ask Claude to vet something "with sandbox probes".
-- **The workspace:** clone, open in Claude Code, start a run at [`stages/01_intake/CONTEXT.md`](stages/01_intake/CONTEXT.md).
+- **Just the skill:** copy [`_shared/skill/`](_shared/skill/SKILL.md) to `~/.claude/skills/ai-vetting-skill-sx/`
+  (or upload it to claude.ai). Then ask Claude to vet a component "with sandbox probes".
+- **The full workspace:** clone this repository, open it in Claude Code, and start a run at
+  [`stages/01_intake/CONTEXT.md`](stages/01_intake/CONTEXT.md). Claude works one stage at a time and stops for
+  your approval before running anything.
 
-Sandboxes: Linux/WSL2 with `bubblewrap` and `strace`; Windows 10/11 Pro with Windows Sandbox (turned on
-by you); Docker/Podman; macOS `sandbox-exec`. No sandbox → probes are reported as not run, never run on the host.
+**Sandboxes supported:**
+- Windows 10/11 Pro with Windows Sandbox (you turn it on), one `.wsb` per probe; see the VectorCraft scripts;
+- Linux or WSL2 with `bubblewrap` and `strace` (`probe.sh`);
+- Docker or Podman;
+- macOS `sandbox-exec`.
+
+## What's in the repository
+
+| Path | What it is |
+|---|---|
+| `_shared/skill/` | The Claude skill: the method, report format, capability/sandbox reference, `probe.sh` and `audit_npm_package.sh` |
+| `stages/0X_*/CONTEXT.md` | Instructions for each stage |
+| `stages/*/output/vectorcraft/` | The worked example, including the Windows Sandbox probe scripts (`sandbox/`) |
+| `CONTEXT.md`, `CLAUDE.md` | How the pipeline fits together (mainly for Claude) |
 
 ## Honest limits
 
-- **`probe.sh` is tested against fake components, not yet against a real one.** `scripts/test_probe.sh`
-  runs 11 cases in WSL2 (Ubuntu 26.04, bubblewrap 0.11.1, strace 6.19): a well-behaved write, a stolen
-  SSH key, a leaked token, writes outside the grant, a `.bashrc` persistence line, network with and
-  without the grant, a child program with and without the grant, and a sandbox that fails to start
-  (reported as failed, never as a pass). All pass. The first run found and fixed three bugs.
-- A secret copied by the kernel (`sendfile`, `copy_file_range`) can't be matched by content; the probe
-  still flags the credential file being opened, and notes the copy.
-- Probes see what happens during the probe task; logic triggered later or remotely can still hide.
-- Static review of a large codebase is a careful search, not a full read; reports say which.
-- This is due diligence, not a guarantee. Shared as is.
+- **Probes only see what happens during the probe.** Logic triggered later, remotely, or by a feature nobody
+  exercised can still hide.
+- **Static review of a large codebase is a careful search, not a full read.** Reports say which.
+- **Some steps still need a person:** approving the plan, and clicking through GUI probes. Online probes need a
+  network you're willing to expose to the sandbox.
+- **`probe.sh` (Linux/WSL2) is tested against fake components.** `scripts/test_probe.sh` runs 11 cases in WSL2,
+  covering a stolen SSH key, a leaked token, writes outside the grant, persistence and network. The Windows
+  Sandbox probes have been used on a real component (VectorCraft).
+- **A secret copied by the kernel** (`sendfile`, `copy_file_range`) can't be matched by content. The probe still
+  flags the credential file being opened.
+- **This is due diligence, not a guarantee.** Shared as is.
 
 ## Credits
 
-Built by [The Compliant Neuron](https://thecompliantneuron.com) with Claude (Anthropic), extending
-its static-only [`ai-component-vetting`](https://github.com/Radic-ode/ai-component-vetting) skill.
-Workspace structure follows the Interpretable Context Methodology (Van Clief & McDermott, arXiv:2603.16021).
+Built by [The Compliant Neuron](https://thecompliantneuron.com) with Claude (Anthropic), extending its
+static-only [`ai-component-vetting`](https://github.com/Radic-ode/ai-component-vetting) skill. The workspace
+follows the Interpretable Context Methodology (Van Clief & McDermott,
+[arXiv:2603.16021](https://arxiv.org/abs/2603.16021)).
 
 MIT licensed. See [LICENSE](LICENSE).

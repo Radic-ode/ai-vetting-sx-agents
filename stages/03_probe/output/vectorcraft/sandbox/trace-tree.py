@@ -14,19 +14,27 @@ with open(src, encoding='utf-8-sig', errors='replace', newline='') as f:
            or any(c in path.lower() or c in det.lower() for c in canaries) or name.lower() == 'msiexec.exe':
             rows.append((t, name, pid, op, path, res, det))
 tree = {pid for t, name, pid, op, path, res, det in rows if root.lower() in name.lower()}
+image = {}   # pid -> image name, so a PID Windows reuses later for another program is not counted
 changed = True
 while changed:
     changed = False
     for t, name, pid, op, path, res, det in rows:
         if op == 'Process Create' and pid in tree:
             m = re.search(r'PID: (\d+)', det)
-            if m and m.group(1) not in tree: tree.add(m.group(1)); changed = True
+            if m and m.group(1) not in tree:
+                tree.add(m.group(1)); image[m.group(1)] = path.split('\\')[-1].lower(); changed = True
+# second pass: every event of the tree, children included (the first pass kept only rows matching the root's name)
+mine = []
+with open(src, encoding='utf-8-sig', errors='replace', newline='') as f:
+    r = csv.reader(f); next(r)
+    for row in r:
+        if row[2] in tree and (row[1].lower() == image[row[2]] if row[2] in image else root.lower() in row[1].lower()):
+            mine.append(tuple(row))
 p = lambda *a: print(*a, file=out)
 p('tree pids:', sorted(tree))
 p('== process creates by anything (child image, parent)')
 for t, name, pid, op, path, res, det in rows:
     if op == 'Process Create': p(f'  {t} {name}({pid}) -> {path} | {det[:200]}')
-mine = [x for x in rows if x[2] in tree]
 p('== tree ops');
 for k, v in collections.Counter((x[1], x[3]) for x in mine).most_common(): p(f'  {v:>7} {k}')
 W = ('WriteFile', 'SetRenameInformationFile', 'SetDispositionInformationFile', 'SetDispositionInformationEx', 'SetEndOfFileInformationFile', 'SetBasicInformationFile')

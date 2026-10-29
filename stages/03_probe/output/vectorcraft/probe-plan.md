@@ -1,6 +1,6 @@
 ---
 run: vectorcraft
-status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). Done 2026-10-29: baseline, install, persist, net-out, self-update (update path never triggered), net-listen, fs-read, fs-write, agent-text, all Within scope; see probe-results.md. Next: exec, then secrets (both need the user at the keyboard).
+status: DONE 2026-10-29. All 11 probes run, all Within scope (self-update's update step Not run: never offered); see probe-results.md. Next: 04_report.
 backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28), one session per probe
 ---
 

@@ -16,8 +16,8 @@ backend: Windows Sandbox, one fresh session per probe (see probe-plan.md)
 | net-listen | Within scope (2026-10-29): `127.0.0.1:7979` only |
 | fs-read | Within scope (2026-10-29) |
 | fs-write | Within scope (2026-10-29) |
-| exec | Not run yet |
-| secrets | Not run yet |
+| exec | Within scope (2026-10-29): only the expected PowerShell, `rundll32 printui.dll`, `explorer` (+ `reg`) |
+| secrets | Within scope (2026-10-29): no canary opened, token not written or sent |
 | agent-text | Within scope (2026-10-29): text accurate, no instructions to the agent; file tools take any path |
 
 ## baseline
@@ -293,3 +293,102 @@ Nothing confines these to a project folder. In an agent setup, what they can rea
 account can, gated only by the agent client's own approval prompts. That is ordinary for a desktop app's
 automation interface, but it belongs under Blast Radius. Not probed: `--connect` mode, actually calling tools,
 and the per-id `vectorcraft://` resource reads.
+
+## exec
+
+**Run.** 2026-10-29 12:11, `logs/exec/`, networking off, with the user at the keyboard. VectorCraft (PID 772)
+opened `C:\probe\tools\test.svg`. The user then:
+- printed: first by mistake to the default **Fax** printer, which opened Windows' fax setup wizard (cancelled),
+  then to **Microsoft Print to PDF**, saving `Desktop\test.pdf`;
+- opened printer setup (twice);
+- used reveal in folder;
+- closed without saving.
+
+The trace closed cleanly (2.7 GB).
+
+**Every process VectorCraft started** (`analysis-tree.txt`):
+
+| When | Child | What it is |
+|---|---|---|
+| 12:11:31 | `reg.exe query "HKCU\Control Panel\International" /v LocaleName` | locale, as in every probe |
+| 12:11:52, 12:13:50, 12:14:01, 12:16:17, 12:16:24 | `powershell -NoProfile -NonInteractive -Command "… Get-CimInstance Win32_Printer -Property Name, Default, Capabilities …"` | lists printers: name, default flag, duplex support. Read in full |
+| 12:12:49 | `powershell -NoProfile -NonInteractive -Command "# Print a print-ready PDF on Windows …"` | the print routine, for the Fax print. It started `WFS.exe /Delete /Account . /SendTo …\Temp\*.tif`, which is Windows' fax console that the Fax printer driver hands the job to |
+| 12:14:04, 12:16:28 | `rundll32.exe printui.dll,PrintUIEntry /e /n Fax` | Windows' printing-preferences dialog for the selected printer |
+| 12:17:36 | `explorer /select,"C:\probe\tools\test.svg"` | reveal in folder |
+
+**About the print script.** Procmon keeps only the first 4,070 characters of a command line, so the rest of the
+script isn't in the trace. The part recorded is all print geometry (paper size, duplex, scaling, margins) using
+`Windows.Data.Pdf` and `System.Drawing.Printing`. It contains no network, file, registry or process commands,
+and reads no environment variables other than VectorCraft's own `CRAFT_*`. Its comment says the job arrives in
+`CRAFT_*` environment variables *"never as arguments"*, so that *"the document's path must not be visible in
+the process list while it prints"*. That keeps the path out of other users' view; it doesn't hide what runs.
+What the script *did* is fully in the trace (below).
+
+**Footprint of the whole tree** (VectorCraft and its children):
+- **VectorCraft:** wrote `Desktop\test.pdf` itself (temp file and rename; "Print to PDF" saved the PDF
+  directly, with no spooling). It also wrote and deleted one `Temp\craft-print-*.pdf` for the Fax print and its
+  own autosave copies in `AppData\Roaming\VectorCraft\Data Recovery\`. Its registry writes were only the Save
+  dialog's Windows bookkeeping (`ComDlg32` MRUs, shell `Bags`).
+- **Children:**
+  - `powershell`'s normal start-up: module analysis cache and the `__PSScriptPolicyTest_*` files in `Temp`.
+  - The print spool file `spool\PRINTERS\00002.SPL`.
+  - The fax console: `Documents\Fax\…`, temp TIFFs and `FXS*DebugLogFile.txt` in `Temp`, and `HKCU\…\Fax`.
+  - Explorer's view state.
+- **Reads in user folders:** folder listings only (Desktop, Documents, Downloads, … from the Save dialog's
+  sidebar and Explorer). The only user file opened was the new `test.pdf`.
+- **No network event** from any process in the tree. **No canary** touched.
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| only `powershell` (printer list / print), `rundll32 printui.dll`, `explorer`, maybe `reg.exe query` | exactly those, plus `WFS.exe`, which Windows' Fax driver started from the print job after the user picked Fax by mistake | as expected |
+
+**Analysis fix.** Until this probe, `trace-tree.py` dropped the *children's* events before building the tree,
+so it reported only VectorCraft's own process. It now does a second pass for every PID in the tree, matching the
+image name so reused PIDs aren't counted. In the earlier probes the only child was `reg.exe` (plus its
+`conhost`), which reads one registry value. All nine earlier traces were re-run through the fixed script. Their
+trees hold only VectorCraft (or `vectorcraft-cli`), `reg.exe` (146 events per launch) and `conhost` (about 325).
+None has a network event or a canary file hit, so their results stand. In `self-update` the re-run first counted
+a `NETSTAT` that inherited a VectorCraft PID after it exited. Root processes are now matched by name too, and
+that trace was run again.
+
+## secrets
+
+**Run.** 2026-10-29 12:27, `logs/secrets/`, networking off, with the user at the keyboard. VectorCraft (PID 4896)
+was used for about 2½ minutes (12:28:13 to 12:30:49): shapes drawn, every top menu opened, the Open and Save As
+dialogs opened and cancelled. It was closed without saving. Canaries were planted as in every probe (tag
+`CANARY-vc-secrets-8f6af22b41`, `canary-paths.txt`). The trace closed cleanly (1.3 GB).
+
+| Expected (written before running) | Observed | |
+|---|---|---|
+| no canary file opened | no event by any process on any canary path. VectorCraft's tree (VectorCraft, `reg.exe`, `conhost`) has **no file event at all** under `.ssh`, `.aws`, `.config`, `Google\Chrome`, `Microsoft\Credentials`, `Microsoft\Protect` or `Microsoft\Vault` | as expected |
+| `CANARY_TOKEN` never written or sent | the token appears in no event of the tree except the environment it inherited at start-up. No network event. The canary tag is in none of VectorCraft's own files (`appdata-Roaming/`) | as expected |
+
+What came closest: 69 registry lookups by VectorCraft for the **`.config` file type** (`HKCR\.config`,
+`…\FileExts\.config`, …), all `NAME NOT FOUND`. They come from the Windows file dialog listing the profile folder,
+where the planted `.config` folder is, and asking which icon to draw. It listed names; it didn't open
+anything inside. The other reads in user folders are folder listings, `desktop.ini`, `Libraries`, and the icon
+and thumbnail caches, all from the Open and Save As dialogs. Child processes: the usual `reg.exe` locale query
+only.
+
+## Outside the method (noted, not a probe)
+The user installed and launched the app on their own machine on 2026-10-28, against this run's
+then-pending report. It started normally. Nothing was monitored, so this is not evidence of what it
+did or did not do.
+
+## Summary for 04_report
+- **All 11 probes ran.** 10 are **Within scope**. `self-update` is also Within scope, but its update step is
+  **Not run: update never offered**.
+- **No OUT OF SCOPE line.** No canary was opened in any probe. Nothing was set to start on its own. There was
+  no network contact at all, even online. The control port is loopback-only. Writes went only to the granted
+  folder, the app's own settings and logs, and the paths the user chose.
+- **Unobserved:** the update download, replacement and signature check (three online launches, no update
+  check). The rest of the print script past 4,070 characters (only its behaviour was observed). Calling MCP
+  tools, `--connect` mode, a real reboot.
+- **For Blast Radius:** the MCP file tools (`open_file`, `save_file`, `export`, `screenshot`) take any path, and
+  `run_command` reaches every menu command, including print and reveal. The installer adds an all-users
+  desktop shortcut.
+- **Method notes:**
+  - Procmon `System` events were dropped until `self-update`. Network results before that also rest on the
+    poll and loaded libraries.
+  - `trace-tree.py` was fixed twice (mapped folders, child processes), and every trace was re-checked.
+  - Most of each trace is Windows' own WMI refresh after the install.

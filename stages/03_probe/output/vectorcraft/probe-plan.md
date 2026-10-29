@@ -1,6 +1,6 @@
 ---
 run: vectorcraft
-status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). baseline DONE 2026-10-29 (run 2, Within scope, see probe-results.md). Script since: poll without WMI, app data copied out. Next: install.
+status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). Done 2026-10-29: baseline, install, persist, net-out (all Within scope, see probe-results.md). Script since: DNS-client event log, System no longer dropped. Next: self-update (internet, ~100 MB).
 backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28), one session per probe
 ---
 
@@ -58,8 +58,9 @@ trace shows only the probe's own task.
 - GUI tasks depend on your clicks; anything the app does only on paths we don't click stays unobserved.
 - Updating replaces 0.17.0 with whatever release is newest *today*. That build is not the one statically
   reviewed; the probe checks its source and signature only.
-- Events from `System`, Defender (`MsMpEng`, `NisSrv`), Windows Search and `CompatTelRunner` are dropped
-  to keep the trace closable. Something VectorCraft did only through one of those would be missed.
+- Events from Defender (`MsMpEng`, `NisSrv`), Windows Search and `CompatTelRunner` are dropped to keep the
+  trace closable. Something VectorCraft did only through one of those would be missed. (`System` was dropped
+  too until net-out, where it turned out to hide network events; it is kept from self-update on.)
 - The MCP server is probed headless. The `--connect` mode is covered by `net-listen` only as a port.
 
 ## What needs your yes before anything runs

@@ -11,8 +11,9 @@ from procmon_parser import Column, Rule, RuleAction, RuleRelation, dumps_configu
 EX, IS, BEGINS, ENDS, CONTAINS = RuleAction.EXCLUDE, RuleRelation.IS, RuleRelation.BEGINS_WITH, RuleRelation.ENDS_WITH, RuleRelation.CONTAINS
 # Windows' own background scanners (Defender, Search, telemetry) react to every file the MSI writes.
 # VectorCraft cannot be any of them, and anything it starts has another name, so dropping them loses nothing.
+# 'System' is NOT dropped: in net-out, Procmon booked a service's TCP traffic under System and it went missing.
 rules = [Rule(Column.PROCESS_NAME, IS, p, EX) for p in
-         ('Procmon.exe', 'Procmon64.exe', 'System', 'MsMpEng.exe', 'NisSrv.exe', 'SearchIndexer.exe',
+         ('Procmon.exe', 'Procmon64.exe', 'MsMpEng.exe', 'NisSrv.exe', 'SearchIndexer.exe',
           'SearchProtocolHost.exe', 'SearchFilterHost.exe', 'CompatTelRunner.exe')]
 rules += [
     Rule(Column.OPERATION, BEGINS, 'IRP_MJ_', EX),

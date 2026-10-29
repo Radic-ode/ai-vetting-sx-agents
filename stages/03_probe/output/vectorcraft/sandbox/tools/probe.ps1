@@ -71,9 +71,11 @@ function Start-Watch {
   # before it is written; without it run 1's trace grew to 5 GB and never closed
   if (-not (Test-Path "$T\probe.pmc")) { Step 'probe.pmc MISSING - run make-pmc.py on the host first; stopping'; Stop-Transcript; Read-Host; exit 1 }
   New-Item -ItemType Directory -Force C:\pm | Out-Null
+  # every DNS lookup with the PID that asked; unlike the DNS cache it does not expire before we read it
+  wevtutil sl Microsoft-Windows-DNS-Client/Operational /e:true | Out-Null
   Start-Process $PM -ArgumentList "/AcceptEula /Quiet /Minimized /LoadConfig $T\probe.pmc /BackingFile C:\pm\trace.pml"; Start-Sleep 8
-  # backup poll with no WMI at all: each WMI query makes the netsvcs svchost run AMSI/Defender lookups, which
-  # was 90% of baseline run 2's 2.9 GB. Parents and command lines come from Procmon's Process Create events.
+  # backup poll with no WMI, so it adds nothing to the WMI service's own churn (Windows' WMIADAP refresh after
+  # the install is most of every trace). Parents and command lines come from Procmon's Process Create events.
   $script:poll = Start-Job -ArgumentList $L {
     param($L)
     while ($true) {
@@ -98,7 +100,8 @@ function Stop-Watch {
   while (Get-Process Procmon, Procmon64 -ErrorAction SilentlyContinue) { Start-Sleep 2 }
   Copy-Item C:\pm\trace*.pml, C:\pm\trace.csv $L -ErrorAction Continue
   foreach ($f in 'poll-net.txt','poll-procs.txt') { if (Test-Path "$L\$f") { Get-Content "$L\$f" | Sort-Object -Unique | Set-Content "$L\$f" } }
-  Get-DnsClientCache -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Entry) -> $($_.Data)" } | Sort-Object -Unique | Set-Content "$L\dns-cache.txt"
+  ipconfig /displaydns | Set-Content "$L\dns-cache.txt"   # Get-DnsClientCache (WMI) wrote nothing in net-out
+  wevtutil qe Microsoft-Windows-DNS-Client/Operational /f:text | Set-Content "$L\dns-client-events.txt"
   # the app's own settings and logs (e.g. whether the update check ran, or a canary turned up in its log);
   # they are discarded with the sandbox otherwise
   foreach ($d in "$env:APPDATA\VectorCraft", "$env:LOCALAPPDATA\VectorCraft") {
@@ -140,9 +143,10 @@ switch ($Probe) {
   'self-update' {  # network ON, install dir writable. Pretend to be 0.1.0 so the real update is offered.
     Install-VC; Snapshot pre; Start-Watch
     $env:VECTORCRAFT_PRETEND_VERSION = '0.1.0'
-    Launch; Ask 'An update prompt should appear. Click LATER. Then close VectorCraft.'
+    # net-out saw no update check at all, so the prompt may not come; "none appeared" is a result too
+    Launch; Ask 'Wait up to 2 minutes for an update prompt. If one appears, click LATER. Either way, close VectorCraft. (Tell Claude whether a prompt appeared.)'
     Step 'second launch, still pretending 0.1.0'
-    Launch; Ask 'Click UPDATE this time. Wait until it has downloaded and restarted itself, then close it.'
+    Launch; Ask 'If an update prompt appears, click UPDATE, wait until it has downloaded and restarted itself, then close it. If none appears within 2 minutes, just close VectorCraft.'
     Remove-Item Env:\VECTORCRAFT_PRETEND_VERSION
     Stop-Watch; Snapshot post; Diff-Snaps pre post
     & $VC --version 2>&1 | Set-Content "$L\version-after.txt"

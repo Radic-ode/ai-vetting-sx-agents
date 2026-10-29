@@ -165,6 +165,11 @@ trace shows only the probe's own task.
 - The MCP server is probed headless. The `--connect` mode is covered by `net-listen` only as a port.
 
 ## What needs your yes before anything runs
+
+> **Note (model-neutral copy):** this run's approvals were given in conversation, as recorded in the status
+> line above, before the `APPROVED:` line format existed. This plan therefore has no such line, and
+> `make-wsb.ps1` now writes no `.wsb` for it. To rerun a probe, the person adds
+> `APPROVED: <probe ids> by <name> on <YYYY-MM-DD>` below this note.
 00. **Probe 13** (`mcp-call-commands`, `mcp-call-links`): the task above, including the command-selection rule
     (some commands are picked from the discovery reply inside the sandbox) and the three links created on the
     sandbox's own disk. Networking stays off.

@@ -7,10 +7,13 @@
 # See references/capability-sandboxes.md for the capability IDs and grants.
 #
 # Usage:
-#   probe.sh -c <capability> -t <component-dir> [-a host1,host2] [-k] -- <command> [args...]
+#   probe.sh -c <capability> -p <probe-plan.md> -t <component-dir> [-a host1,host2] [-k] -- <command> [args...]
 #
 #   -c  baseline | install | net-out | net-listen | fs-read | fs-write |
 #       exec | secrets | persist | self-update
+#   -p  the approved probe plan. It must hold a line, written by the person:
+#         APPROVED: <ALL | capability ids, comma-separated> by <name> on <YYYY-MM-DD>
+#       that covers this capability; otherwise nothing runs (exit 4)
 #   -t  folder holding the component (mounted read-only at /work, except
 #       for `install`, which gets a writable copy)
 #   -a  hosts the component is expected to contact (net-out, install,
@@ -18,25 +21,36 @@
 #   -k  keep the run folder (trace + canaries) instead of deleting it
 #
 # Example:
-#   probe.sh -c net-out -t ./pkg -a registry.npmjs.org -- node /work/index.js --check
+#   probe.sh -c net-out -p ./probe-plan.md -t ./pkg -a registry.npmjs.org -- node /work/index.js --check
 #
 # Exit code: 0 = everything observed was within scope, 3 = out-of-scope
-# activity found, 1/2 = usage or setup error.
+# activity found, 4 = not approved in the plan, 1/2 = usage or setup error.
 
 set -uo pipefail
 
-CAP="" TARGET="" ALLOW="" KEEP=0
-while getopts "c:t:a:kh" o; do
+CAP="" PLAN="" TARGET="" ALLOW="" KEEP=0
+while getopts "c:p:t:a:kh" o; do
   case "$o" in
-    c) CAP="$OPTARG" ;; t) TARGET="$OPTARG" ;; a) ALLOW="$OPTARG" ;; k) KEEP=1 ;;
-    *) sed -n '2,25p' "$0"; exit 1 ;;
+    c) CAP="$OPTARG" ;; p) PLAN="$OPTARG" ;; t) TARGET="$OPTARG" ;; a) ALLOW="$OPTARG" ;; k) KEEP=1 ;;
+    *) sed -n '2,28p' "$0"; exit 1 ;;
   esac
 done
 shift $((OPTIND - 1))
 [ "${1:-}" = "--" ] && shift
-[ -n "$CAP" ] && [ -n "$TARGET" ] && [ $# -gt 0 ] || { sed -n '2,25p' "$0"; exit 1; }
+[ -n "$CAP" ] && [ -n "$PLAN" ] && [ -n "$TARGET" ] && [ $# -gt 0 ] || { sed -n '2,28p' "$0"; exit 1; }
 case "$CAP" in baseline|install|net-out|net-listen|fs-read|fs-write|exec|secrets|persist|self-update) ;;
   *) echo "unknown capability: $CAP" >&2; exit 1 ;; esac
+
+# --- the approval gate: a person's APPROVED line in the plan must cover this capability.
+# Checked before anything else is set up, so an unapproved probe touches nothing.
+[ -f "$PLAN" ] || { echo "NOT APPROVED: no plan file at $PLAN" >&2; exit 4; }
+approved_by_plan() {   # $1 plan, $2 capability; true if an APPROVED line lists ALL or the capability
+  sed -nE 's/^[[:space:]]*APPROVED:[[:space:]]*(.+)[[:space:]]+by[[:space:]]+[^[:space:]].*[[:space:]]+on[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]*$/\1/p' "$1" |
+    tr ',' '\n' | tr -d ' \t\r' | grep -qxE "ALL|$2"
+}
+approved_by_plan "$PLAN" "$CAP" || {
+  echo "NOT APPROVED: $PLAN has no line 'APPROVED: <ALL | ids> by <name> on <YYYY-MM-DD>' covering '$CAP'." >&2
+  echo "Only the person adds that line. Nothing was run." >&2; exit 4; }
 for t in bwrap strace; do command -v "$t" >/dev/null || { echo "missing: $t (sudo apt install bubblewrap strace)" >&2; exit 2; }; done
 [ -d "$TARGET" ] || { echo "not a folder: $TARGET" >&2; exit 1; }
 TARGET="$(cd "$TARGET" && pwd)"

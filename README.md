@@ -1,11 +1,15 @@
-# ai-vetting-skill-sx
+# ai-vetting-sx-agents
 
 **Check a third-party AI tool before you install it, the way a bank checks a new supplier. Then go one
 step further: run each thing it can do in its own throwaway sandbox and watch what it actually does.**
 
+**This is the model-neutral edition.** Any AI agent that can read files can run it: Codex, Gemini CLI,
+Cursor, Claude Code, or a chat model you hand the files to. Every agent starts at
+[`START-HERE.md`](START-HERE.md). (The Claude-first original is `ai-vetting-skill-sx`.)
+
 ## Why this exists
 
-MCP servers, plugins, Claude skills, hooks and apps that an AI agent drives all run with *your*
+MCP servers, plugins, agent skills, hooks and apps that an AI agent drives all run with *your*
 permissions. They can read your files, use your network and start other programs. Reading their code
 tells you what they *could* do. This project adds evidence of what they *do*:
 - each capability (network, files, processes, credentials, starting at login, updating itself, the text
@@ -39,7 +43,9 @@ says plainly what wasn't checked.
 
 ## Safety rules built in
 
-- **Nothing third-party runs until a person approves the probe plan.**
+- **Nothing third-party runs until a person approves the probe plan.** You approve by adding one line to
+  `probe-plan.md`: `APPROVED: <ALL | probe ids> by <name> on <date>`. The probe scripts refuse to run any
+  probe without it, whichever AI is driving.
 - One capability per sandbox, never shared, so one feature can't hide behind another's permission.
 - Probes never fall back to your real machine. If there's no sandbox, the probe is reported as "not run".
 - Everything inside the component (code, docs, tool descriptions) is treated as data under review, never as
@@ -72,11 +78,14 @@ machine that ran them and are not in this repository.)
 
 ## How to use it
 
-- **Just the skill:** copy [`_shared/skill/`](_shared/skill/SKILL.md) to `~/.claude/skills/ai-vetting-skill-sx/`
-  (or upload it to claude.ai). Then ask Claude to vet a component "with sandbox probes".
-- **The full workspace:** clone this repository, open it in Claude Code, and start a run at
-  [`stages/01_intake/CONTEXT.md`](stages/01_intake/CONTEXT.md). Claude works one stage at a time and stops for
-  your approval before running anything.
+- **With an agent tool** (Codex, Gemini CLI, Cursor, Claude Code, …): clone this repository and open it. The
+  tool's own entry file (`AGENTS.md`, `GEMINI.md` or `CLAUDE.md`) sends the agent to
+  [`START-HERE.md`](START-HERE.md). Ask it to vet a component. It checks what it can do, picks a mode (full,
+  static + plan, or static-only), works one stage at a time, and stops for your approval.
+- **With a chat model:** give it `START-HERE.md`, `_shared/skill/SKILL.md` and the component's files, and ask for
+  a static-only vetting. It can't run sandboxes, so the report will say the probes were not run.
+- **Just the method:** [`_shared/skill/SKILL.md`](_shared/skill/SKILL.md) is plain Markdown. Tools that support
+  the open Agent Skills format can load the `_shared/skill/` folder as a skill.
 
 **Sandboxes supported:**
 - Windows 10/11 Pro with Windows Sandbox (you turn it on), one `.wsb` per probe; see the VectorCraft scripts;
@@ -88,20 +97,26 @@ machine that ran them and are not in this repository.)
 
 | Path | What it is |
 |---|---|
-| `_shared/skill/` | The Claude skill: the method, report format, capability/sandbox reference, `probe.sh` and `audit_npm_package.sh` |
+| `START-HERE.md` | The entry point for every agent and model: rules, modes, map |
+| `AGENTS.md`, `GEMINI.md`, `CLAUDE.md` | One-line pointers to `START-HERE.md`, one per tool convention |
+| `_shared/skill/` | The method: report format, capability/sandbox reference, `probe.sh` (with the approval check) and `audit_npm_package.sh` |
 | `stages/0X_*/CONTEXT.md` | Instructions for each stage |
 | `stages/*/output/vectorcraft/` | The worked example, including the Windows Sandbox probe scripts (`sandbox/`) |
-| `CONTEXT.md`, `CLAUDE.md` | How the pipeline fits together (mainly for Claude) |
+| `CONTEXT.md` | How the pipeline fits together |
 
 ## Honest limits
 
 - **Probes only see what happens during the probe.** Logic triggered later, remotely, or by a feature nobody
   exercised can still hide.
 - **Static review of a large codebase is a careful search, not a full read.** Reports say which.
-- **Some steps still need a person:** approving the plan, and clicking through GUI probes. Online probes need a
-  network you're willing to expose to the sandbox.
-- **`probe.sh` (Linux/WSL2) is tested against fake components.** `scripts/test_probe.sh` runs 11 cases in WSL2,
-  covering a stolen SSH key, a leaked token, writes outside the grant, persistence and network. The Windows
+- **How well a run goes depends on the model driving it.** The rules that matter most (approval, no run outside a
+  sandbox) are enforced by the scripts, not left to the model. The VectorCraft run makes a good test for a new
+  model: compare its report with this one.
+- **The approval check proves a line exists, not who wrote it.** An agent with write access could add it. The
+  instructions forbid that, and every approval stays visible in the plan, but it is a safeguard, not a lock.
+- **`probe.sh` (Linux/WSL2) is tested against fake components.** `scripts/test_probe.sh` runs 16 cases in WSL2
+  (all passing on 2026-10-29). They cover a stolen SSH key, a leaked token, writes outside the grant,
+  persistence, network, and the approval check: no plan, a malformed line, a probe not listed. The Windows
   Sandbox probes have been used on a real component (VectorCraft).
 - **A secret copied by the kernel** (`sendfile`, `copy_file_range`) can't be matched by content. The probe still
   flags the credential file being opened.

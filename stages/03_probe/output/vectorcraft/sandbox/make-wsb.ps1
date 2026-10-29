@@ -2,6 +2,7 @@
 # empty log folder per probe into ..\logs\<probe>\. Writes files only; starts nothing.
 # Re-run it before every probe session: a probe's log folder must start empty. A finished probe's folder
 # (it has DONE.txt) is kept as evidence; to run that probe again, pass -Redo <probe>.
+# Only probes approved in ..\probe-plan.md get a .wsb (see the gate below).
 param([string[]]$Redo = @())
 $here  = $PSScriptRoot
 $tools = Join-Path $here 'tools'
@@ -13,7 +14,21 @@ $networked = 'net-out', 'self-update'
 $probes = 'baseline','install','persist','net-out','self-update','net-listen','fs-read','fs-write','exec','secrets','agent-text','mcp-call-unscoped','mcp-call-scoped','mcp-call-commands','mcp-call-links'
 $withOut = 'fs-write', 'mcp-call-unscoped', 'mcp-call-scoped', 'mcp-call-commands'   # these also get C:\probe\out, from ..\logs\<probe>-out
 
+# the approval gate: a .wsb is written only for probes that a person's line in ..\probe-plan.md covers:
+#   APPROVED: <ALL | probe ids, comma-separated> by <name> on <YYYY-MM-DD>
+$plan = Join-Path (Split-Path $here) 'probe-plan.md'
+$approved = @()
+if (Test-Path $plan) {
+  foreach ($line in Get-Content $plan) {
+    if ($line -match '^\s*APPROVED:\s*(.+)\s+by\s+\S.*\s+on\s+\d{4}-\d{2}-\d{2}\s*$') {
+      $approved += $Matches[1] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } } } }
+$written = 0
+
 foreach ($p in $probes) {
+  if (-not (($approved -contains 'ALL') -or ($approved -contains $p))) {
+    Remove-Item -Force (Join-Path $wsb "$p.wsb") -ErrorAction SilentlyContinue   # no stale config left to double-click
+    Write-Host "NOT APPROVED: $p (no APPROVED line in probe-plan.md covers it; only the person adds it). No .wsb written."
+    continue }
   $log = Join-Path $logs $p
   $keep = (Test-Path (Join-Path $log 'DONE.txt')) -and ($p -notin $Redo)
   if ($keep) { Write-Host "kept $p (finished; -Redo $p to run it again)" }
@@ -51,5 +66,6 @@ foreach ($p in $probes) {
   </LogonCommand>
 </Configuration>
 "@ | Set-Content -Encoding UTF8 (Join-Path $wsb "$p.wsb")
+  $written++
 }
-Write-Host "wrote $($probes.Count) .wsb files to $wsb and empty log folders under $logs"
+Write-Host "wrote $written of $($probes.Count) .wsb files (approved probes only) to $wsb, log folders under $logs"

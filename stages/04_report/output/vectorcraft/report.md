@@ -4,13 +4,14 @@
 **Source:** release `v0.17.0` (2026-10-25), `vectorcraft-0.17.0-windows-x64.msi`, SHA-256 `861f4e9f…5d11c1`
 **Repository:** github.com/storytold/vectorcraft (source reviewed at `752a67e`, Oct 8, and `9997ff0`, Oct 28)
 **Date:** 2026-10-29 (replaces the static-only report of 2026-10-28)
+**Status:** FINAL (2026-10-29), after peer-review corrections
 
 ## Risk Tier: MEDIUM
 
 VectorCraft 0.17.0 behaved like a well-behaved desktop editor in all 15 sandbox probes. No canary
 credential's content was observed being read or modified (the scoped MCP server opened two canaries only for
-their attributes, to resolve a path it then refused). It set nothing to start on its own, made no network contact at all, kept its control port on
-loopback, and started only the helper programs it documents. It stays at Medium for two reasons:
+their attributes, to resolve a path it then refused). In the probes it set nothing to start on its own, made no network contact at all, kept its
+control port on loopback, and started only the helper programs it documents. It stays at Medium for two reasons:
 - it is large, fast-moving code that was spot-checked, not read, and the exact 0.17.0 commit was not reviewed;
 - it can start PowerShell and write wherever it is pointed, and its MCP interface hands that reach to an agent
   unless it is scoped. Scoping is off by default. When it is on, it confined every file path tried, by any route.
@@ -20,10 +21,10 @@ loopback, and started only the helper programs it documents. It stays at Medium 
 | Category | Score | Reasoning |
 |---|---|---|
 | Provenance & Maintainer Trust | Pass | Official org repo. Both source zips are byte-identical to repo commits. The MSI was built by the repo's CI, its hash matches the release's `SHA256SUMS.txt`, and it is Authenticode-signed by a Microsoft-verified identity (Learning Machines Inc), re-verified after the probes. Minor LLC/Inc naming mismatch. |
-| Permission Scope vs. Need | Pass | Observed use fits an editor: the files the user opens and saves, its own settings and logs, printer helpers, and a locale lookup. 0.17.0 has **no network client**: no connection in three online launches, and no updater or HTTP/TLS code in the shipped binaries. The control port is opt-in and bound to `127.0.0.1`. *(Up from Partial: the network use scored statically belongs to newer code.)* |
+| Permission Scope vs. Need | Pass | Observed use fits an editor: the files the user opens and saves, its own settings and logs, printer helpers, and a locale lookup. **No network use was observed or found** in 0.17.0: no connection in three online launches, and a string search of the shipped binaries found no updater and no HTTP/TLS library (`ureq`, `rustls`). That search can't rule out network code under other names or through Windows' own network APIs. The control port is opt-in and listens on `127.0.0.1` only. The MCP file tools reach any path by default. With the root options set, every out-of-root path tried was refused, but the server did **open out-of-root targets, two of them canaries, for their attributes only** (to resolve the path), and read or wrote no content. This score rests on that narrower content-access reading. Under the probe 12 plan's original wording ("opened"), those opens could be classified as failures. *(Up from Partial: the network use scored statically belongs to newer code.)* |
 | Auditability | Partial | Open source, readable, no obfuscation. But it is large (606k lines changed in 20 days), was reviewed by pattern and not read, 32 dependencies come from the publisher's own unreviewed forks, and the `v0.17.0` commit itself sits between the two reviewed commits. The probes and a byte search of the shipped binaries cover part of that gap. |
-| Blast Radius | Partial | It writes wherever the user (or an agent) saves, and starts fixed PowerShell scripts (printer list, printing), `rundll32 printui.dll` and `explorer`, all observed and all documented. It doesn't run arbitrary code, reach the network, persist or touch credentials. But its MCP file tools take **any path** by default (shown: an unscoped `export` wrote to the Desktop), and the control port lets any local process drive the app while it is on. With `--automation-read-root` / `--automation-write-root` it refused every out-of-root path tried: the four file tools, file commands run by id through `run_command` / `command_run` / `command_batch` / `invoke_menu`, `..` traversal, and symlinks or junctions inside a root. It read or wrote nothing outside. That mitigation works, but the score is for the defaults: unscoped, an open control port while `--control` runs, and `run_command` reaching print and Explorer (not tested under scoping). So it stays Partial. |
-| Change Control | Pass | 0.17.0 doesn't update itself: no update check in three online launches, and no updater code in the binary. A new version arrives only when the user installs a new MSI, which comes with release notes, checksums and a signature. **Newer versions add a startup update check** (prompted, hash- and signature-checked, per the source); re-assess on upgrade. *(Up from Partial.)* |
+| Blast Radius | Partial | It writes wherever the user (or an agent) saves, and starts fixed PowerShell scripts (printer list, printing), `rundll32 printui.dll` and `explorer`, all observed and all documented. No arbitrary code execution, network contact, persistence or credential-content access was observed in the probes or found in the code reviewed. That doesn't cover unexercised features, notably WebAssembly plug-ins. Its MCP file tools take **any path** by default (shown: an unscoped `export` wrote to the Desktop). The control port listens on loopback (verified). Per the code review it has no authentication, so any local process could likely drive the app while it is on. That access was not tested. With `--automation-read-root` / `--automation-write-root` it refused every out-of-root path tried: the four file tools, file commands run by id through `run_command` / `command_run` / `command_batch` / `invoke_menu`, `..` traversal, and symlinks or junctions inside a root. It read or wrote nothing outside. That mitigation works, but the score is for the defaults: unscoped, an open control port while `--control` runs, and `run_command` reaching print and Explorer (not tested under scoping). So it stays Partial. |
+| Change Control | Pass | *Scope of this score: how the software itself changes (updates). It does not cover authorising the changes an agent makes through the MCP server, such as per-call approval or overwriting files. Those belong under Blast Radius and Coverage Limitations, and were not tested.* 0.17.0 was not seen to update itself: no update check in three online launches, and no updater found by a string search of the binaries. A new version arrives only when the user installs a new MSI, which comes with release notes, checksums and a signature. **Newer versions add a startup update check** (prompted, hash- and signature-checked, per the source); re-assess on upgrade. *(Up from Partial.)* |
 
 ## Capability Probes
 
@@ -36,7 +37,7 @@ a once-a-second connection and process poll. Details in `03_probe/output/vectorc
 | install | Program Files, Start menu | silent MSI install, no launch | Windows Sandbox | Within scope: install dir, Start-menu shortcut, uninstall entry, App Paths. No custom actions, no association, nothing auto-starting. Also an **all-users desktop shortcut** (not expected, harmless) |
 | persist | nothing extra | install, launch, quit; diff before and after | Windows Sandbox | Within scope: no Run key, task or service added |
 | net-out | network | launch online, 2 min | Windows Sandbox (online) | Within scope: **no connection at all** (no socket opened) |
-| self-update | network, install dir | two online launches as "0.1.0", Later / Update | Windows Sandbox (online) | Within scope: no check, no prompt, no download; still 0.17.0 and validly signed. The update step couldn't be exercised because **0.17.0 contains no updater** (binary search, below) |
+| self-update | network, install dir | two online launches as "0.1.0", Later / Update | Windows Sandbox (online) | Within scope: no check, no prompt, no download; still 0.17.0 and validly signed. The update step couldn't be exercised: **no updater was found in 0.17.0** (binary search, below) |
 | net-listen | loopback | `--control 7979` | Windows Sandbox | Within scope: `127.0.0.1:7979` only, no outbound |
 | fs-read | read `test.svg` | open it from the command line | Windows Sandbox | Within scope: `test.svg` plus its own files. No other user file, no canary |
 | fs-write | write `C:\probe\out` | CLI export to SVG, PDF, PNG | Windows Sandbox | Within scope: temp file then rename inside the out folder only |
@@ -54,13 +55,14 @@ and `vectorcraft-cli.exe` match the hashes the sandbox recorded. Neither contain
 - an HTTP/TLS stack: `ureq`, `rustls`.
 
 Their only web addresses are documentation, repository, XML-namespace, website and Discord links. The updater
-in the static review is newer than this release.
+in the static review is newer than this release. This is a string search: it shows these names are absent, not
+that no network code of any kind exists.
 
 ## Coverage Limitations
 
 - **The exact source of 0.17.0 was not reviewed.** The release tag lies between the two reviewed commits. Its
   behaviour rests on the probes and the binary search, and the binaries were not rebuilt from source and compared.
-- **Updating is unobserved.** 0.17.0 has no updater, so the download, replacement and signature check in newer
+- **Updating is unobserved.** No updater was found or seen in 0.17.0, so the download, replacement and signature check in newer
   code have never been seen running. Any newer version needs `net-out` and `self-update` probed again.
 - **Code coverage is partial:**
   - The 606k-line change between the reviewed commits was searched by pattern, not read.
@@ -90,7 +92,9 @@ in the static review is newer than this release.
     Under the original wording these events could be classified as failures (see `probe-results.md`, probe 12
     note);
   - `--connect` mode was not probed, with or without the root options.
-- **The control port was only checked for where it listens,** not for what it accepts from a local process.
+- **The control port was only checked for where it listens** (`127.0.0.1:7979`). Its access control and
+  whether a local process can actually invoke commands through it were not tested. The "no authentication"
+  point comes from the code review only.
 - **No real reboot.** The Windows 10 sandbox can't restart, so `persist` shows nothing is *set up* to start
   again, not what happens across a restart.
 - **Observer limits:**
@@ -106,7 +110,8 @@ in the static review is newer than this release.
 
 The user already has 0.17.0 installed, from the same MSI that was probed. Nothing found calls for removing it.
 
-1. **Stay on 0.17.0 deliberately.** It doesn't check for or install updates and makes no network contact. Before
+1. **Stay on 0.17.0 deliberately.** In the probes it neither checked for nor installed updates, and it made no
+   network contact. Before
    moving to a newer version:
    - check its `SHA256SUMS.txt` and Authenticode signature as in intake;
    - expect a startup update check (prompted, with "Later");
@@ -123,7 +128,8 @@ The user already has 0.17.0 installed, from the same MSI that was probed. Nothin
    - inside the write root, an agent can likely replace existing files without asking (inferred, not tested).
      Point the write root at a working folder, not at originals.
 3. **Use the control port only when needed.** Start `--control` only while an agent drives the app, and close
-   the app afterwards. Any local program can use the port while it's open.
+   the app afterwards. It listens on loopback only (verified). The code review found no authentication, so
+   other programs on the machine could likely use it while it's open. That was not tested.
 4. *(Optional)* Delete the all-users desktop shortcut (`C:\Users\Public\Desktop\VectorCraft.lnk`) if you don't
    want it.
 

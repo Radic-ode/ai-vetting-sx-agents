@@ -1,6 +1,6 @@
 ---
 run: vectorcraft
-status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). Baseline run 1 done: snapshots ok, Procmon trace unusable (5 GB, not closed). Next: Procmon filter config, rerun baseline.
+status: APPROVED 2026-10-28 (all 11, internet for 4-5, Procmon + EULA). baseline DONE 2026-10-29 (run 2, Within scope, see probe-results.md). Script since: poll without WMI, app data copied out. Next: install.
 backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28), one session per probe
 ---
 
@@ -22,7 +22,10 @@ backend: Windows Sandbox (Windows 10 Pro 19045, enabled by the user 2026-10-28),
      `.ssh\id_rsa`, `.aws\credentials`, `.env`, `.config\gh\hosts.yml`, a Chrome `Login Data` stand-in,
      a file in `AppData\Roaming\Microsoft\Credentials`, and the environment variable `CANARY_TOKEN`.
   3. Runs that probe's task under two observers: **Process Monitor**, which records every file,
-     registry, network and process event, and a once-a-second poll of connections and processes.
+     registry, network and process event, and a backup poll (`netstat` every second, the process list
+     every 5 s). Procmon loads `tools/probe.pmc` (written by `sandbox/make-pmc.py`), which drops before
+     writing only Procmon's own events, NTFS metadata, fast I/O, profiling, and Windows' background
+     scanners (Defender, Search, telemetry). Nothing is filtered by VectorCraft's name.
   4. Where relevant, snapshots the startup places (Run keys, scheduled tasks, services, uninstall
      entries, file lists) before and after, and diffs them.
 - **When a person is needed,** the console says `>>> YOU: …` and waits for Enter (e.g. "click Later").
@@ -55,6 +58,8 @@ trace shows only the probe's own task.
 - GUI tasks depend on your clicks; anything the app does only on paths we don't click stays unobserved.
 - Updating replaces 0.17.0 with whatever release is newest *today*. That build is not the one statically
   reviewed; the probe checks its source and signature only.
+- Events from `System`, Defender (`MsMpEng`, `NisSrv`), Windows Search and `CompatTelRunner` are dropped
+  to keep the trace closable. Something VectorCraft did only through one of those would be missed.
 - The MCP server is probed headless. The `--connect` mode is covered by `net-listen` only as a port.
 
 ## What needs your yes before anything runs

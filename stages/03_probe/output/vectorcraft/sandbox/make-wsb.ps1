@@ -1,6 +1,8 @@
 # make-wsb.ps1 - runs on the HOST. Writes one Windows Sandbox config per probe into .\wsb\ and an
 # empty log folder per probe into ..\logs\<probe>\. Writes files only; starts nothing.
-# Re-run it before every probe session: a probe's log folder must start empty.
+# Re-run it before every probe session: a probe's log folder must start empty. A finished probe's folder
+# (it has DONE.txt) is kept as evidence; to run that probe again, pass -Redo <probe>.
+param([string[]]$Redo = @())
 $here  = $PSScriptRoot
 $tools = Join-Path $here 'tools'
 $logs  = Join-Path (Split-Path $here) 'logs'
@@ -12,13 +14,17 @@ $probes = 'baseline','install','persist','net-out','self-update','net-listen','f
 
 foreach ($p in $probes) {
   $log = Join-Path $logs $p
-  if (Test-Path $log) { Remove-Item -Recurse -Force $log }
-  New-Item -ItemType Directory -Force $log | Out-Null
+  $keep = (Test-Path (Join-Path $log 'DONE.txt')) -and ($p -notin $Redo)
+  if ($keep) { Write-Host "kept $p (finished; -Redo $p to run it again)" }
+  else {
+    if (Test-Path $log) { Remove-Item -Recurse -Force $log }
+    New-Item -ItemType Directory -Force $log | Out-Null }
   $out = ''
   if ($p -eq 'fs-write') {   # the grant: one writable folder, kept apart from the log folder
     $o = Join-Path $logs 'fs-write-out'
-    if (Test-Path $o) { Remove-Item -Recurse -Force $o }
-    New-Item -ItemType Directory -Force $o | Out-Null
+    if (-not $keep) {
+      if (Test-Path $o) { Remove-Item -Recurse -Force $o }
+      New-Item -ItemType Directory -Force $o | Out-Null }
     $out = @"
 
     <MappedFolder><HostFolder>$o</HostFolder><SandboxFolder>C:\probe\out</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>

@@ -67,16 +67,19 @@ function Diff-Snaps($a, $b) {
 # --- observers: Process Monitor (every file/registry/network/process event) + 1 s polling as a backup
 function Start-Watch {
   # trace on the sandbox's own disk: the mapped log folder is too slow for Procmon to close cleanly
+  # probe.pmc (made by make-pmc.py) drops only Procmon's own and Windows' background noise, and drops it
+  # before it is written; without it run 1's trace grew to 5 GB and never closed
+  if (-not (Test-Path "$T\probe.pmc")) { Step 'probe.pmc MISSING - run make-pmc.py on the host first; stopping'; Stop-Transcript; Read-Host; exit 1 }
   New-Item -ItemType Directory -Force C:\pm | Out-Null
-  Start-Process $PM -ArgumentList '/AcceptEula /Quiet /Minimized /BackingFile C:\pm\trace.pml'; Start-Sleep 8
+  Start-Process $PM -ArgumentList "/AcceptEula /Quiet /Minimized /LoadConfig $T\probe.pmc /BackingFile C:\pm\trace.pml"; Start-Sleep 8
+  # backup poll with no WMI at all: each WMI query makes the netsvcs svchost run AMSI/Defender lookups, which
+  # was 90% of baseline run 2's 2.9 GB. Parents and command lines come from Procmon's Process Create events.
   $script:poll = Start-Job -ArgumentList $L {
     param($L)
     while ($true) {
-      Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.RemoteAddress -notin '0.0.0.0','::' -or $_.State -eq 'Listen' } |
-        ForEach-Object { "$($_.State) $($_.LocalAddress):$($_.LocalPort) -> $($_.RemoteAddress):$($_.RemotePort) pid=$($_.OwningProcess)" } |
-        Add-Content "$L\poll-net.txt"
-      Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) parent=$($_.ParentProcessId) $($_.Name) :: $($_.CommandLine)" } |
-        Add-Content "$L\poll-procs.txt"
+      netstat -ano | Select-String 'TCP|UDP' | Where-Object { $_ -notmatch '\s(0\.0\.0\.0|\[::\]):0\s' -or $_ -match 'LISTENING' } |
+        ForEach-Object { $_.Line.Trim() -replace '\s+', ' ' } | Add-Content "$L\poll-net.txt"
+      Get-Process | ForEach-Object { "$($_.Id) $($_.ProcessName) :: $($_.Path)" } | Add-Content "$L\poll-procs.txt"
       Start-Sleep 1
     }
   }
@@ -87,12 +90,19 @@ function Stop-Watch {
   Start-Process $PM -ArgumentList '/Terminate' -Wait
   while (Get-Process Procmon, Procmon64 -ErrorAction SilentlyContinue) { Start-Sleep 2 }   # fully closed
   Start-Sleep 3
+  # the filter Procmon actually ran with (it saves its settings on exit), checked on the host afterwards
+  reg export 'HKCU\Software\Sysinternals\Process Monitor' "$L\procmon-settings.reg" /y 2>$null | Out-Null
+  Get-ChildItem C:\pm\trace*.pml | ForEach-Object { Step "trace file $($_.Name) $([math]::Round($_.Length/1MB)) MB" }
   Step 'converting trace to CSV'
-  Start-Process $PM -ArgumentList '/AcceptEula /OpenLog C:\pm\trace.pml /SaveAs C:\pm\trace.csv' -Wait
+  Start-Process $PM -ArgumentList "/AcceptEula /Quiet /LoadConfig $T\probe.pmc /OpenLog C:\pm\trace.pml /SaveApplyFilter /SaveAs C:\pm\trace.csv" -Wait
   while (Get-Process Procmon, Procmon64 -ErrorAction SilentlyContinue) { Start-Sleep 2 }
-  Copy-Item C:\pm\trace.pml, C:\pm\trace.csv $L -ErrorAction Continue
+  Copy-Item C:\pm\trace*.pml, C:\pm\trace.csv $L -ErrorAction Continue
   foreach ($f in 'poll-net.txt','poll-procs.txt') { if (Test-Path "$L\$f") { Get-Content "$L\$f" | Sort-Object -Unique | Set-Content "$L\$f" } }
   Get-DnsClientCache -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Entry) -> $($_.Data)" } | Sort-Object -Unique | Set-Content "$L\dns-cache.txt"
+  # the app's own settings and logs (e.g. whether the update check ran, or a canary turned up in its log);
+  # they are discarded with the sandbox otherwise
+  foreach ($d in "$env:APPDATA\VectorCraft", "$env:LOCALAPPDATA\VectorCraft") {
+    if (Test-Path $d) { Copy-Item $d "$L\appdata-$(Split-Path (Split-Path $d) -Leaf)" -Recurse -Force -ErrorAction Continue } }
   Step 'observers stopped, trace saved'
 }
 

@@ -21,7 +21,7 @@ backend: Windows Sandbox, one fresh session per probe (see probe-plan.md)
 | agent-text | Within scope (2026-10-29): text accurate, no instructions to the agent; file tools take any path |
 | mcp-call-unscoped | Within scope (2026-10-29): 8 calls, each result as described; the Desktop control export was written (unscoped = any path) |
 | mcp-call-scoped | Within scope (2026-10-29): in-root calls work; **all 9 out-of-root calls refused**, traversal included; no out-of-root file read or written (only metadata handles for path resolution) |
-| mcp-call-commands | Within scope (2026-10-29): 5 file commands × 4 routes (`run_command`, `command_run`, `command_batch`, `invoke_menu`): every in-root call worked, **all 40 out-of-root calls refused**; 2 chosen commands take no `path` (not exercised) |
+| mcp-call-commands | Within scope (2026-10-29): 6 path-taking file commands × 4 routes (`run_command`, `command_run`, `command_batch`, `invoke_menu`): every in-root call worked, **all 32 out-of-root calls refused** (16 writes, 16 reads); 2 further chosen commands take no `path` (not exercised as file operations) |
 | mcp-call-links | Within scope (2026-10-29): a file symlink and two junctions inside the roots, pointing out: **all 4 attempts refused**, nothing read or written through them |
 
 ## baseline
@@ -424,9 +424,16 @@ The refusal text is the same whether the target exists (canaries, `win.ini`) or 
 
 **Note on the verdict rule.** The plan counts an out-of-root file as **not** blocked if it is "opened or
 written". Here the canaries and `win.ini` were opened only for their attributes and resolved name, never for
-their content. I count that as blocked: an attribute-only handle can't read the file. And the server's reply
-was the same as for a path that doesn't exist, so even the file's existence didn't reach the agent. This is
-my judgement on the rule's wording. Read strictly, the rule would flag it, so it is named here.
+their content. Both facts stand:
+- **Under the plan's original wording**, these attribute-only opens could be classified as failures. The plan
+  is left unchanged.
+- **The narrower content-access criterion was satisfied:** no content was read or written, and an
+  attribute-only handle can't read a file. The server's reply was also the same as for a path that doesn't
+  exist, so even the file's existence didn't reach the agent.
+
+The Within scope verdict rests on the narrower reading. That is my judgement, made after the run. A reader who
+applies the original wording would mark these events as failures. (Probe 13's plan, written before it ran,
+states the narrower criterion explicitly.)
 
 **What the scoping covers, and what it doesn't (not tested here):**
 - Tested: `open_file`, `export`, `save_file` and `screenshot` with `path`, including `..` traversal.
@@ -476,8 +483,16 @@ in the plan, and the chosen set covers the open, save, save-as and export paths.
 
 Each refusal is the same root-rejection error as probe 12, raised by the route's own name
 (`run_command: automation path rejected: outside the write root C:\probe\out\: <path>`). In a batch it shows as
-the step's `error` with `failed: 1`. So the check sits under the tools, in the engine's command path, and
-covers every route tried.
+the step's `error` with `failed: 1`. The same check fired for every route and every path-taking command
+tested. That is **consistent with** one shared check under the tools, in the engine's command path. But it is
+inferred from behaviour; the internal architecture was not verified.
+
+**Count** (corrected 2026-10-29 from an earlier "5 commands, 40 of 40"; the evidence is unchanged):
+- 6 path-taking commands (#1, 2, 3, 5, 7, 8);
+- 32 out-of-root calls, all refused: 4 write commands × 4 routes = 16, plus 2 read commands × 2 targets × 4
+  routes = 16;
+- the 12 further out-of-root calls went to #4 and #6, which reject `path` as a parameter. Those tested
+  nothing about the roots.
 
 ### mcp-call-links
 **Run.** 2026-10-29 13:34, `logs/mcp-call-links/`. Before observing, the script created `C:\work\in` (holding
@@ -487,9 +502,16 @@ covers every route tried.
 - `C:\work\out\desk-junction` → the Desktop.
 
 Server PID 2508, roots `C:\work\in` / `C:\work\out` (stderr: `files confined: read C:\work\in; write C:\work\out`).
-It answered all 8 calls and exited. The trace closed cleanly (281 MB). One harmless script error at the end:
-the shared listing step tried to list `C:\probe\out`, which this probe doesn't map. The rest of `out-files.txt`
-was written.
+It answered all 8 calls and exited. The trace closed cleanly (281 MB).
+
+**Harness error.** After the trace was saved (after `observers stopped, trace saved`), the shared listing step
+tried to list `C:\probe\out`. This probe doesn't map that folder, so PowerShell reported `Cannot find path`.
+The error was non-terminating, and the script went on to write `DONE.txt`.
+- **Retained:** `trace.pml`/`trace.csv`, the requests, responses and stderr, `links-made.txt`, the rest of
+  `out-files.txt` (the `C:\probe`, Desktop, `C:\work\in` and `C:\work\out` listings and the target checks), and
+  `work-out/a.svg`.
+- **Lost:** only a listing of a folder this probe never used.
+- **Effect on the conclusion:** none. The verdict rests on the replies and the trace, both complete.
 
 | Call | Result |
 |---|---|
@@ -509,14 +531,20 @@ outside the root.
 | Expected (written before running) | Observed | |
 |---|---|---|
 | in-root controls succeed | every control that took a `path` succeeded: 16 files in `C:\probe\out` by temp + rename, `a.svg` in `C:\work\out`, every in-root open | as expected |
-| every out-of-root attempt, by command id, batch, menu id or link, returns the root-rejection error | 40 of 40 by command, 4 of 4 by link | as expected |
+| every out-of-root attempt, by command id, batch, menu id or link, returns the root-rejection error | 32 of 32 by path-taking command (6 commands × 4 routes), 4 of 4 by link | as expected |
 | no read of the canaries or `win.ini`, no file created on the Desktop | the opens on out-of-root targets were all `Desired Access: Read Attributes, Synchronize`: 64 by PID 4832, 13 by PID 2508. Each was followed only by name queries and a close. **0** `ReadFile`, `WriteFile`, rename or delete on any of them. The Desktop holds only `desktop.ini` afterwards. `trace-tree.py` lists those attribute opens as canary hits (8 + 1), as in probe 12 | as expected (same note as probe 12) |
 | (every probe) no network, no child process, no canary in output | no network events, no process created by the server, registry writes only `RegSetInfoKey`; the canary tag appears in no reply or output file | as expected |
 
 **Still not covered:** commands that matched the rule but fell past the cap (`file.place`, `file.saveCopy`,
-`file.export`, `document.exportPdf`, …). The check sits in the shared command path, so they are likely covered,
-but that is inferred, not observed. Hard links, which no path check can see (stated in the plan). `--connect`
-mode.
+`file.export`, `document.exportPdf`, …). The observed behaviour is consistent with a shared check that would
+cover them, but that is inferred, not observed. Also not covered:
+- hard links, which no path check can see (stated in the plan);
+- `--connect` mode;
+- overwriting an existing file inside the write root. The roots decide *where* a file operation may go, not
+  *whether* each one is approved. Nothing here tested per-call approval or protection against replacing an
+  existing in-root file. The save path renames its temp file with `ReplaceIfExists: True` (seen for
+  `control.svg` in `mcp-call-unscoped`), so an existing file is likely replaced without asking. That is
+  inferred, not tested.
 
 ## Outside the method (noted, not a probe)
 The user installed and launched the app on their own machine on 2026-10-28, against this run's
@@ -526,19 +554,27 @@ did or did not do.
 ## Summary for 04_report
 - **All 11 planned probes ran** (plus `mcp-call` and probe 13, below). 10 are **Within scope**. `self-update` is also Within scope, but its update step is
   **Not run: update never offered**.
-- **No OUT OF SCOPE line.** No canary was opened in any probe. Nothing was set to start on its own. There was
+- **No OUT OF SCOPE line.** No canary content was observed being read or modified in any probe. In the scoped
+  MCP probes, the server opened two canaries (`canary-drawing.svg`, `id_rsa`) with attribute-only handles to
+  resolve an out-of-root path before refusing it. It never opened them for their content. Nothing was set to
+  start on its own. There was
   no network contact at all, even online. The control port is loopback-only. Writes went only to the granted
   folder, the app's own settings and logs, and the paths the user chose.
 - **`mcp-call` (added later, two probes, both Within scope):** the MCP tools did what they describe. With
   `--automation-read-root` / `--automation-write-root` set, all 9 out-of-root calls to the four file tools were
   refused, `..` traversal included, with no out-of-root content read or written.
 - **Probe 13 (`mcp-call-commands`, `mcp-call-links`, both Within scope):** the roots also held for file commands
-  run by id. 5 commands × 4 routes gave 40 of 40 refusals. They held for symlinks and junctions inside a root
-  pointing out: 4 of 4 refused. Out of root there were only attribute-only opens to resolve the path.
+  run by id: 6 path-taking commands × 4 routes, 32 of 32 out-of-root calls refused. Two more selected
+  commands took no path and were not exercised. They held for symlinks and junctions inside a root pointing
+  out: 4 of 4 refused. Out of root there were only attribute-only opens to resolve the path. That counts as a
+  pass under the content-access criterion, but could be classified as a failure under the original "opened"
+  wording (see the probe 12 note).
 - **Unobserved:** the update download, replacement and signature check (three online launches, no update
   check). The rest of the print script past 4,070 characters (only its behaviour was observed). `--connect`
-  mode, a real reboot. Under scoping: file commands past the probe's cap of 8 (likely covered, since the check
-  sits in the shared command path), and hard links, which no path check can see.
+  mode, a real reboot. Under scoping:
+  - file commands past the probe's cap of 8 (consistent with a shared check, not observed);
+  - hard links, which no path check can see;
+  - per-call approval or overwrite protection inside the write root (not provided by the roots, not tested).
 - **For Blast Radius:** by default the MCP file tools (`open_file`, `save_file`, `export`, `screenshot`) take any
   path (shown in `mcp-call-unscoped`), and `run_command` reaches every menu command, including print and reveal.
   The root options confine those four tools (shown in `mcp-call-scoped`). They also confine file commands

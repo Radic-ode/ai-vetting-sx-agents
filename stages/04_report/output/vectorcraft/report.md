@@ -7,8 +7,9 @@
 
 ## Risk Tier: MEDIUM
 
-VectorCraft 0.17.0 behaved like a well-behaved desktop editor in all 15 sandbox probes. It touched no
-canary credentials, set nothing to start on its own, made no network contact at all, kept its control port on
+VectorCraft 0.17.0 behaved like a well-behaved desktop editor in all 15 sandbox probes. No canary
+credential's content was observed being read or modified (the scoped MCP server opened two canaries only for
+their attributes, to resolve a path it then refused). It set nothing to start on its own, made no network contact at all, kept its control port on
 loopback, and started only the helper programs it documents. It stays at Medium for two reasons:
 - it is large, fast-moving code that was spot-checked, not read, and the exact 0.17.0 commit was not reviewed;
 - it can start PowerShell and write wherever it is pointed, and its MCP interface hands that reach to an agent
@@ -44,7 +45,7 @@ a once-a-second connection and process poll. Details in `03_probe/output/vectorc
 | agent-text | none | `vectorcraft-cli mcp --headless`: list tools, prompts, resources | Windows Sandbox | Within scope: 32 tools, 5 prompts, 3 resources. Text accurate, nothing addressed to the agent's own rules, no URLs or hidden characters |
 | mcp-call-unscoped | write `C:\probe\out` | MCP calls: new document, draw, paint, inspect, preview, export, open; plus an export to the Desktop | Windows Sandbox | Within scope: every result as its tool describes; writes only the requested files. The Desktop export succeeded: **unscoped, any path** |
 | mcp-call-scoped | write `C:\probe\out`, read the tools folder | same calls with `--automation-read-root` / `--automation-write-root`, then 9 out-of-root writes and reads (Desktop, two canaries, `win.ini`, two `..` traversals) | Windows Sandbox | Within scope: in-root calls work; **all 9 out-of-root calls refused**, same message whether the file exists or not; no out-of-root content read or written (attribute-only handles for path resolution) |
-| mcp-call-commands | as mcp-call-scoped | 5 file commands by id (`document.save`/`export`/`open`, `file.open`/`saveAs`, `document.exportForOffice`), each via `run_command`, `command_run`, `command_batch`, `invoke_menu`, in and out of root | Windows Sandbox | Within scope: in-root calls work; **all 40 out-of-root calls refused**, nothing read or written outside. 2 further commands picked by the selection rule take no path (not exercised) |
+| mcp-call-commands | as mcp-call-scoped | 6 path-taking file commands by id (`document.save`/`export`/`open`, `file.open`/`saveAs`, `document.exportForOffice`), each via `run_command`, `command_run`, `command_batch`, `invoke_menu`, in and out of root | Windows Sandbox | Within scope: in-root calls work; **all 32 out-of-root calls refused** (16 writes, 16 reads), no content read or written outside. 2 further commands picked by the selection rule (`select.object.openPaths`, `document.exportPresets.save`) take no path, so they were not exercised as file operations |
 | mcp-call-links | roots on the sandbox's own disk | a file symlink and two junctions inside the roots pointing at a canary, `C:\Windows` and the Desktop; open, export and save through them | Windows Sandbox | Within scope: **all 4 refused**. The server follows each link to its real target before checking it |
 
 **Binary check (host, read-only, after the probes).** The MSI was unpacked as data with 7-Zip. `vectorcraft.exe`
@@ -74,11 +75,20 @@ in the static review is newer than this release.
 - **MCP coverage is partial:**
   - called: drawing, inspection, preview and the four file tools, unscoped and scoped. Not called: print,
     reveal, keyboard, `ui_*` and most other tools;
-  - the root options were tested on the four file tools, on 5 file commands by id via all four command routes,
-    and on symlinks and junctions. **Not tested:** file commands past the probe's cap of 8 (e.g. `file.place`,
-    `file.saveCopy`, `file.export`). The check sits in the shared command path, so these are likely covered,
-    but that is inferred. Print and reveal were not tested under scoping. Hard links inside a root can't be
-    told apart from ordinary files by any path check;
+  - the root options were tested on the four file tools, on 6 path-taking file commands by id via all four
+    command routes, and on symlinks and junctions. **Not tested:**
+    - file commands past the probe's cap of 8 (e.g. `file.place`, `file.saveCopy`, `file.export`). The observed
+      behaviour is consistent with one shared check that would cover them, but that is inferred;
+    - print and reveal under scoping;
+    - hard links inside a root, which no path check can tell apart from ordinary files;
+  - **the roots govern where file operations may go, not whether each is approved.** No per-call approval, no
+    protection against replacing an existing file inside the write root, and no separation of duties were
+    tested or claimed;
+  - **acceptance criterion:** the probe 12 plan counted an out-of-root file "opened" as a failure. The server
+    did open out-of-root targets (two of them canaries), but only for their attributes, to resolve the path
+    before refusing it. It read or wrote no content. The verdicts use that narrower content-access reading.
+    Under the original wording these events could be classified as failures (see `probe-results.md`, probe 12
+    note);
   - `--connect` mode was not probed, with or without the root options.
 - **The control port was only checked for where it listens,** not for what it accepts from a local process.
 - **No real reboot.** The Windows 10 sandbox can't restart, so `persist` shows nothing is *set up* to start
@@ -109,7 +119,9 @@ The user already has 0.17.0 installed, from the same MSI that was probed. Nothin
    The server confirms on stderr: `files confined: read …; write …`. What remains:
    - the roots confine files, not actions. Keep the agent client's approval prompt on for `run_command`,
      `command_batch` and `invoke_menu`, which can still print or open Explorer;
-   - keep hard links to outside files out of the root folders.
+   - keep hard links to outside files out of the root folders;
+   - inside the write root, an agent can likely replace existing files without asking (inferred, not tested).
+     Point the write root at a working folder, not at originals.
 3. **Use the control port only when needed.** Start `--control` only while an agent drives the app, and close
    the app afterwards. Any local program can use the port while it's open.
 4. *(Optional)* Delete the all-users desktop shortcut (`C:\Users\Public\Desktop\VectorCraft.lnk`) if you don't

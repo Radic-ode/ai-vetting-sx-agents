@@ -32,7 +32,21 @@ need to run commands.
 | read files and run commands, but no sandbox | **Static + plan** | stages 1, 2, the plan in 3, and 4; every probe "Not run: no sandbox", tier capped at Medium |
 | only read text (a chat model given the files) | **Static-only** | stages 1, 2 and 4 from what the person gives you; say clearly that nothing was run or verified by you |
 
-Say which mode you are in at the start of the run, and write it into `intake.md`.
+Then **check the requirements for that mode before starting**, and tell the person what's missing. Don't
+install anything yourself; the person decides. (Full list: `README.md`, Requirements.)
+
+| Needed for | Check |
+|---|---|
+| every run | `git` |
+| intake | a SHA-256 tool (`Get-FileHash` or `sha256sum`); `gh` and 7-Zip are optional |
+| Windows probes | Windows Sandbox is turned on (`WindowsSandbox.exe` exists); `Procmon64.exe` is in the run's `sandbox/tools/` (it is not in the repository: the person downloads it from Microsoft Sysinternals and decides on its licence); Python 3 for `trace-tree.py` |
+| Linux/WSL2 probes | `bwrap`, `strace` and `timeout` are on the PATH |
+| npm components | `node` and `npm` |
+| online probes | the person has said the sandbox may use the network |
+| regenerating the Procmon filter (rare) | the Python package `procmon-parser` |
+
+If a requirement for probes is missing, drop to the next mode down and say so. Say which mode you are in at the
+start of the run, and write it into `intake.md`.
 
 ## 3. Where things live
 

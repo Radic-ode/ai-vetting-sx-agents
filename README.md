@@ -90,8 +90,26 @@ machine that ran them and are not in this repository.)
 **Sandboxes supported:**
 - Windows 10/11 Pro with Windows Sandbox (you turn it on), one `.wsb` per probe; see the VectorCraft scripts;
 - Linux or WSL2 with `bubblewrap` and `strace` (`probe.sh`);
-- Docker or Podman;
-- macOS `sandbox-exec`.
+- Docker or Podman, and macOS `sandbox-exec`: the method describes how to set them up
+  (`references/capability-sandboxes.md`), but no ready-made script ships for them.
+
+## Requirements
+
+What you need depends on what you vet and which sandbox you use. Nothing here is installed for you. An agent
+following [`START-HERE.md`](START-HERE.md) checks for these before it starts and says what's missing.
+
+| For | You need | Notes |
+|---|---|---|
+| Every run | an AI agent or model that can read files (to run probes, also commands), and `git` | Static review alone needs nothing else. |
+| Intake | a SHA-256 tool (`Get-FileHash` / `sha256sum`); optionally `gh` (GitHub releases) and 7-Zip | 7-Zip unpacks an installer such as an MSI *as data*, without installing it. |
+| Probes on Windows | Windows 10/11 **Pro, Enterprise or Education** with the **Windows Sandbox** feature turned on (virtualisation enabled in firmware), and Windows PowerShell 5.1 (built in) | You turn the feature on yourself. |
+| Probes on Windows | **Process Monitor** (`Procmon64.exe`) from Microsoft Sysinternals: [`ProcessMonitor.zip`](https://download.sysinternals.com/files/ProcessMonitor.zip), with only `Procmon64.exe` placed in the run's `sandbox/tools/` | Not in this repository (not ours to redistribute). The probe script starts it with `/AcceptEula`, which accepts Microsoft's Sysinternals licence inside each sandbox. That's your decision, or accept it once on your own machine. |
+| Trace analysis | **Python 3**, standard library only, for `trace-tree.py` | Runs on your machine, on the saved trace. |
+| Regenerating the Procmon filter | the Python package `procmon-parser` (in a virtual environment) for `make-pmc.py` | Only to change `probe.pmc`. The committed filter works as is. |
+| Probes on Linux/WSL2 | `bash`, `bubblewrap`, `strace`, coreutils `timeout` | `sudo apt install bubblewrap strace` |
+| npm components | Node.js and `npm`, for `audit_npm_package.sh` | |
+| Online probes (`net-out`, `self-update`) | a network you're willing to expose to the sandbox | Turning on sandbox networking can disturb some host connections, e.g. USB tethering. |
+| Each run | the component itself (its installer, package or repository), downloaded into its own new, empty folder outside this workspace | Never committed. |
 
 ## What's in the repository
 
